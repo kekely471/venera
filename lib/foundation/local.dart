@@ -577,9 +577,17 @@ class LocalManager with ChangeNotifier {
     // 列举文件
     var files = await manager.listDirectory(chapterPath);
     files = files.where((f) => !f.isDirectory && _isImageFile(f.name)).toList();
+    if (files.isEmpty) {
+      throw "No images found in webdav chapter";
+    }
 
-    // 过滤 cover 文件
-    files.removeWhere((f) => f.name.toLowerCase().startsWith('cover.'));
+    // 优先过滤 cover 文件，但确保不会过滤到空列表
+    var nonCoverFiles = files
+        .where((f) => !f.name.toLowerCase().startsWith('cover.'))
+        .toList();
+    if (nonCoverFiles.isNotEmpty) {
+      files = nonCoverFiles;
+    }
 
     // 排序（按文件名）
     files.sort(_compareImageFilenames);
@@ -640,6 +648,17 @@ class LocalManager with ChangeNotifier {
     }
 
     return aName.compareTo(bName);
+  }
+
+  Directory _getWebDavImageCacheDir(String directory) {
+    var normalized = directory;
+    if (normalized.startsWith('/')) {
+      normalized = normalized.substring(1);
+    }
+    while (normalized.startsWith('\\')) {
+      normalized = normalized.substring(1);
+    }
+    return Directory(FilePath.join(App.cachePath, 'webdav_comics', normalized));
   }
 
   bool isDownloaded(
@@ -771,9 +790,7 @@ class LocalManager with ChangeNotifier {
       if (mobiDir != null) {
         Directory(mobiDir).deleteIgnoreError(recursive: true);
       } else {
-        var cacheDir = Directory(
-          '${App.cachePath}/webdav_comics${c.directory}',
-        );
+        var cacheDir = _getWebDavImageCacheDir(c.directory);
         cacheDir.deleteIgnoreError(recursive: true);
       }
     }
@@ -849,9 +866,7 @@ class LocalManager with ChangeNotifier {
           if (mobiDir != null) {
             webdavCacheDirs.add(Directory(mobiDir));
           } else {
-            webdavCacheDirs.add(
-              Directory('${App.cachePath}/webdav_comics${c.directory}'),
-            );
+            webdavCacheDirs.add(_getWebDavImageCacheDir(c.directory));
           }
         }
         _db.execute('DELETE FROM comics WHERE id = ? AND comic_type = ?;', [

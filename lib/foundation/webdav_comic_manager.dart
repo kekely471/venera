@@ -2,7 +2,9 @@
 // @author: kirk
 
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:crypto/crypto.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/appdata.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
@@ -199,22 +201,6 @@ class WebDavComicManager with ChangeNotifier {
     });
   }
 
-  /// 检查文件是否存在
-  Future<bool> fileExists(String path) async {
-    try {
-      return _withRetry(() async {
-        var client = _getClient();
-        var cfg = config!;
-        var fullPath = _normalizePath('${cfg['basePath']}$path');
-
-        var files = await client.readDir(fullPath);
-        return files.isNotEmpty;
-      });
-    } catch (e) {
-      return false;
-    }
-  }
-
   /// 扫描漫画目录（递归）
   ///
   /// [path] 相对于 basePath 的路径，默认为根目录 "/"
@@ -328,8 +314,8 @@ class WebDavComicManager with ChangeNotifier {
     // 提取漫画名称
     var name = path.split('/').last;
 
-    // 生成唯一 ID
-    var id = 'webdav_${path.hashCode.abs()}';
+    // 生成稳定且可复现的唯一 ID，避免 hashCode 变化导致历史/收藏错位
+    var id = 'webdav_${md5.convert(utf8.encode(path)).toString()}';
 
     return LocalComic(
       id: id,

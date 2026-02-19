@@ -55,6 +55,19 @@ class _WebDavPdfReaderPageState extends State<WebDavPdfReaderPage> {
 
   Future<void> _goNextPage() async => _goToPage(_currentPage + 1);
 
+  void _syncPageState(int totalPages) {
+    _totalPages = totalPages;
+    if (totalPages <= 0) return;
+    final clamped = _currentPage.clamp(1, totalPages);
+    if (clamped == _currentPage) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {
+        _currentPage = clamped;
+      });
+    });
+  }
+
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
     final key = event.logicalKey;
@@ -102,13 +115,11 @@ class _WebDavPdfReaderPageState extends State<WebDavPdfReaderPage> {
             }
 
             final totalPages = document.pages.length;
-            _totalPages = totalPages;
-            if (_currentPage > totalPages && totalPages > 0) {
-              _currentPage = totalPages;
+            _syncPageState(totalPages);
+            if (totalPages <= 0) {
+              return const Center(child: Text('No readable pages'));
             }
-            if (_currentPage < 1 && totalPages > 0) {
-              _currentPage = 1;
-            }
+            final currentPage = _currentPage.clamp(1, totalPages);
 
             return Column(
               children: [
@@ -124,18 +135,18 @@ class _WebDavPdfReaderPageState extends State<WebDavPdfReaderPage> {
                           final velocity = details.primaryVelocity ?? 0;
                           if (velocity.abs() < 120) return;
                           if (velocity < 0) {
-                            _goNextPage();
+                            _goToPage(currentPage + 1);
                           } else {
-                            _goPrevPage();
+                            _goToPage(currentPage - 1);
                           }
                         },
                         child: ColoredBox(
                           color: Colors.black,
                           child: Center(
                             child: PdfPageView(
-                              key: ValueKey<int>(_currentPage),
+                              key: ValueKey<int>(currentPage),
                               document: document,
-                              pageNumber: _currentPage,
+                              pageNumber: currentPage,
                               backgroundColor: Colors.white,
                               decoration: const BoxDecoration(
                                 color: Colors.white,
@@ -157,13 +168,15 @@ class _WebDavPdfReaderPageState extends State<WebDavPdfReaderPage> {
                         iconSize: 18,
                         splashRadius: 18,
                         color: Colors.white70,
-                        onPressed: _currentPage > 1 ? _goPrevPage : null,
+                        onPressed: currentPage > 1
+                            ? () => _goToPage(currentPage - 1)
+                            : null,
                         icon: const Icon(Icons.chevron_left),
                       ),
                       Expanded(
                         child: Center(
                           child: Text(
-                            '$_currentPage / $totalPages',
+                            '$currentPage / $totalPages',
                             style: const TextStyle(
                               color: Colors.white70,
                               fontSize: 12,
@@ -175,8 +188,8 @@ class _WebDavPdfReaderPageState extends State<WebDavPdfReaderPage> {
                         iconSize: 18,
                         splashRadius: 18,
                         color: Colors.white70,
-                        onPressed: _currentPage < totalPages
-                            ? _goNextPage
+                        onPressed: currentPage < totalPages
+                            ? () => _goToPage(currentPage + 1)
                             : null,
                         icon: const Icon(Icons.chevron_right),
                       ),

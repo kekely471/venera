@@ -218,25 +218,9 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
       if (localComic == null) {
         return Res.error('${widget.sourceKey} comic not found');
       }
-      var history = HistoryManager().find(widget.id, comicType);
       if (isFirst) {
         Future.microtask(() {
-          App.rootContext.to(() {
-            return Reader(
-              type: comicType,
-              cid: widget.id,
-              name: localComic.title,
-              chapters: localComic.chapters,
-              initialPage: history?.page,
-              initialChapter: history?.ep,
-              initialChapterGroup: history?.group,
-              history:
-                  history ??
-                  History.fromModel(model: localComic, ep: 0, page: 0),
-              author: localComic.subTitle ?? '',
-              tags: localComic.tags,
-            );
-          });
+          localComic.read();
           App.mainNavigatorKey!.currentContext!.pop();
         });
         isFirst = false;
