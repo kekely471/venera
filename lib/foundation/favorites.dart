@@ -1229,7 +1229,10 @@ class LocalFavoritesManager with ChangeNotifier {
   }
 
   void markAsRead(String id, ComicType type) {
-    var folder = appdata.settings['followUpdatesFolder'];
+    final folder = appdata.settings['followUpdatesFolder'];
+    if (folder is! String || folder.isEmpty) {
+      return;
+    }
     if (!existsFolder(folder)) {
       return;
     }

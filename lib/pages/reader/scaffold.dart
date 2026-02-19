@@ -250,7 +250,8 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
 
   void addImageFavorite() async {
     try {
-      if (context.reader.images![0].contains('file://')) {
+      if (context.reader.images![0].contains('file://') ||
+          context.reader.images![0].contains('webdav://')) {
         showToast(
           message: "Local comic collection is not supported at present".tl,
           context: context,
@@ -884,6 +885,14 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
     Uint8List data;
     if (imageKey.startsWith("file://")) {
       data = await File(imageKey.substring(7)).readAsBytes();
+    } else if (imageKey.startsWith("webdav://")) {
+      var remotePath = imageKey.substring(9);
+      var cacheFile = File('${App.cachePath}/webdav_comics/$remotePath');
+      if (await cacheFile.exists()) {
+        data = await cacheFile.readAsBytes();
+      } else {
+        data = await WebDavComicManager().readFile(remotePath);
+      }
     } else {
       data = await (await CacheManager().findCache(
         "$imageKey@${context.reader.type.sourceKey}@${context.reader.cid}@${context.reader.eid}",

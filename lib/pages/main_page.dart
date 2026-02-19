@@ -3,6 +3,7 @@ import 'package:venera/foundation/appdata.dart';
 import 'package:venera/pages/categories_page.dart';
 import 'package:venera/pages/search_page.dart';
 import 'package:venera/pages/settings/settings_page.dart';
+import 'package:venera/pages/webdav_comics_page.dart';
 import 'package:venera/utils/translations.dart';
 
 import '../components/components.dart';
@@ -52,6 +53,9 @@ class _MainPageState extends State<MainPage> {
     const ExplorePage(
       key: PageStorageKey('explore'),
     ),
+    const WebDavComicsPage(
+      key: PageStorageKey('webdav'),
+    ),
     const CategoriesPage(
       key: PageStorageKey('categories'),
     ),
@@ -80,6 +84,11 @@ class _MainPageState extends State<MainPage> {
           label: 'Explore'.tl,
           icon: Icons.explore_outlined,
           activeIcon: Icons.explore,
+        ),
+        PaneItemEntry(
+          label: 'WebDAV'.tl,
+          icon: Icons.cloud_outlined,
+          activeIcon: Icons.cloud,
         ),
         PaneItemEntry(
           label: 'Categories'.tl,

@@ -210,17 +210,20 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
 
   @override
   Future<Res<ComicDetails>> loadData() async {
-    if (widget.sourceKey == 'local') {
-      var localComic = LocalManager().find(widget.id, ComicType.local);
+    if (widget.sourceKey == 'local' || widget.sourceKey == 'webdav') {
+      var comicType = widget.sourceKey == 'local'
+          ? ComicType.local
+          : ComicType.webdav;
+      var localComic = LocalManager().find(widget.id, comicType);
       if (localComic == null) {
-        return const Res.error('Local comic not found');
+        return Res.error('${widget.sourceKey} comic not found');
       }
-      var history = HistoryManager().find(widget.id, ComicType.local);
+      var history = HistoryManager().find(widget.id, comicType);
       if (isFirst) {
         Future.microtask(() {
           App.rootContext.to(() {
             return Reader(
-              type: ComicType.local,
+              type: comicType,
               cid: widget.id,
               name: localComic.title,
               chapters: localComic.chapters,
@@ -239,7 +242,7 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
         isFirst = false;
       }
       await Future.delayed(const Duration(milliseconds: 200));
-      return const Res.error('Local comic');
+      return Res.error('${widget.sourceKey} comic');
     }
     var comicSource = ComicSource.find(widget.sourceKey);
     if (comicSource == null) {

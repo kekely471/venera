@@ -39,6 +39,7 @@ class _ReaderImagesState extends State<_ReaderImages> {
     if (inProgress) return;
     inProgress = true;
     if (reader.type == ComicType.local ||
+        reader.type == ComicType.webdav ||
         (LocalManager().isDownloaded(
           reader.cid,
           reader.type,
@@ -599,6 +600,13 @@ class _GalleryModeState extends State<_GalleryMode>
     if (imageKey == null) return null;
     if (imageKey.startsWith("file://")) {
       return await File(imageKey.substring(7)).readAsBytes();
+    } else if (imageKey.startsWith("webdav://")) {
+      var remotePath = imageKey.substring(9);
+      var cacheFile = File('${App.cachePath}/webdav_comics/$remotePath');
+      if (await cacheFile.exists()) {
+        return await cacheFile.readAsBytes();
+      }
+      return await WebDavComicManager().readFile(remotePath);
     } else {
       return (await CacheManager().findCache(
         "$imageKey@${context.reader.type.sourceKey}@${context.reader.cid}@${context.reader.eid}",
@@ -1183,6 +1191,13 @@ class _ContinuousModeState extends State<_ContinuousMode>
     if (imageKey == null) return null;
     if (imageKey.startsWith("file://")) {
       return await File(imageKey.substring(7)).readAsBytes();
+    } else if (imageKey.startsWith("webdav://")) {
+      var remotePath = imageKey.substring(9);
+      var cacheFile = File('${App.cachePath}/webdav_comics/$remotePath');
+      if (await cacheFile.exists()) {
+        return await cacheFile.readAsBytes();
+      }
+      return await WebDavComicManager().readFile(remotePath);
     } else {
       return (await CacheManager().findCache(
         "$imageKey@${context.reader.type.sourceKey}@${context.reader.cid}@${context.reader.eid}",
@@ -1207,6 +1222,9 @@ ImageProvider _createImageProviderFromKey(
   BuildContext context,
   int page,
 ) {
+  if (imageKey.startsWith("webdav://")) {
+    return WebDavComicImageProvider(imageKey.substring(9));
+  }
   var reader = context.reader;
   return ReaderImageProvider(
     imageKey,
@@ -1241,7 +1259,7 @@ void _preDownloadImage(int page, BuildContext context) {
   }
   var reader = context.reader;
   var imageKey = reader.images![page - 1];
-  if (imageKey.startsWith("file://")) {
+  if (imageKey.startsWith("file://") || imageKey.startsWith("webdav://")) {
     return;
   }
   var cid = reader.cid;

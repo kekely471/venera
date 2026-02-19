@@ -28,7 +28,9 @@ import 'package:venera/foundation/global_state.dart';
 import 'package:venera/foundation/history.dart';
 import 'package:venera/foundation/image_provider/cached_image.dart';
 import 'package:venera/foundation/image_provider/reader_image.dart';
+import 'package:venera/foundation/image_provider/webdav_comic_image.dart';
 import 'package:venera/foundation/local.dart';
+import 'package:venera/foundation/webdav_comic_manager.dart';
 import 'package:venera/foundation/log.dart';
 import 'package:venera/foundation/res.dart';
 import 'package:venera/network/images.dart';
@@ -196,10 +198,24 @@ class _ReaderState extends State<Reader>
     if (chapter < 1) {
       chapter = 1;
     }
-    if (widget.initialChapterGroup != null) {
-      for (int i = 0; i < (widget.initialChapterGroup! - 1); i++) {
-        chapter += widget.chapters!.getGroupByIndex(i).length;
+    if (widget.initialChapterGroup != null &&
+        widget.chapters?.isGrouped == true) {
+      var maxGroup = widget.chapters!.groupCount;
+      if (maxGroup > 0) {
+        var targetGroup = widget.initialChapterGroup!;
+        if (targetGroup < 1) {
+          targetGroup = 1;
+        } else if (targetGroup > maxGroup) {
+          targetGroup = maxGroup;
+        }
+        for (int i = 0; i < (targetGroup - 1); i++) {
+          chapter += widget.chapters!.getGroupByIndex(i).length;
+        }
       }
+    }
+    var maxChapter = widget.chapters?.length ?? 1;
+    if (chapter > maxChapter) {
+      chapter = maxChapter;
     }
     if (widget.initialPage != null) {
       page = widget.initialPage!;

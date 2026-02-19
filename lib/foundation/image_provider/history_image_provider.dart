@@ -1,8 +1,12 @@
 import 'dart:async' show Future;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/local.dart';
+import 'package:venera/foundation/webdav_comic_manager.dart';
+import 'package:venera/foundation/webdav_mobi_service.dart';
 import 'package:venera/network/images.dart';
+import 'package:venera/utils/io.dart';
 import '../history.dart';
 import 'base_image_provider.dart';
 import 'history_image_provider.dart' as image_provider;
@@ -22,6 +26,16 @@ class HistoryImageProvider
     if (!url.contains('/')) {
       var localComic = LocalManager().find(history.id, history.type);
       if (localComic != null) {
+        if (localComic.comicType == ComicType.webdav) {
+          var mobiDir = WebDavMobiService.decodeDirectory(localComic.directory);
+          if (mobiDir != null) {
+            return File(FilePath.join(mobiDir, localComic.cover)).readAsBytes();
+          }
+          var coverRemotePath = localComic.hasChapters
+              ? "${localComic.directory}/${localComic.chapters!.ids.first}/${localComic.cover}"
+              : "${localComic.directory}/${localComic.cover}";
+          return WebDavComicManager().readFile(coverRemotePath);
+        }
         return localComic.coverFile.readAsBytes();
       }
       var comicSource =
@@ -38,10 +52,12 @@ class HistoryImageProvider
       history.id,
     )) {
       checkStop();
-      chunkEvents.add(ImageChunkEvent(
-        cumulativeBytesLoaded: progress.currentBytes,
-        expectedTotalBytes: progress.totalBytes,
-      ));
+      chunkEvents.add(
+        ImageChunkEvent(
+          cumulativeBytesLoaded: progress.currentBytes,
+          expectedTotalBytes: progress.totalBytes,
+        ),
+      );
       if (progress.imageBytes != null) {
         return progress.imageBytes!;
       }
