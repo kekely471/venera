@@ -31,6 +31,9 @@ PODS:
   - pdfrx (0.0.6):
     - Flutter
     - FlutterMacOS
+  - rar (0.2.1):
+    - FlutterMacOS
+    - UnrarKit (~> 2.9)
   - rhttp (0.0.1):
     - FlutterMacOS
   - screen_retriever_macos (0.0.1):
@@ -56,6 +59,9 @@ PODS:
     - sqlite3/fts5
     - sqlite3/perf-threadsafe
     - sqlite3/rtree
+  - UnrarKit (2.10):
+    - UnrarKit/unrar-lib (= 2.10)
+  - UnrarKit/unrar-lib (2.10)
   - url_launcher_macos (0.0.1):
     - FlutterMacOS
   - window_manager (0.2.0):
@@ -78,6 +84,7 @@ DEPENDENCIES:
   - lodepng_flutter (from `Flutter/ephemeral/.symlinks/plugins/lodepng_flutter/macos`)
   - path_provider_foundation (from `Flutter/ephemeral/.symlinks/plugins/path_provider_foundation/darwin`)
   - pdfrx (from `Flutter/ephemeral/.symlinks/plugins/pdfrx/darwin`)
+  - rar (from `Flutter/ephemeral/.symlinks/plugins/rar/macos`)
   - rhttp (from `Flutter/ephemeral/.symlinks/plugins/rhttp/macos`)
   - screen_retriever_macos (from `Flutter/ephemeral/.symlinks/plugins/screen_retriever_macos/macos`)
   - share_plus (from `Flutter/ephemeral/.symlinks/plugins/share_plus/macos`)
@@ -90,6 +97,7 @@ SPEC REPOS:
   trunk:
     - OrderedSet
     - sqlite3
+    - UnrarKit
 
 EXTERNAL SOURCES:
   app_links:
@@ -120,6 +128,8 @@ EXTERNAL SOURCES:
     :path: Flutter/ephemeral/.symlinks/plugins/path_provider_foundation/darwin
   pdfrx:
     :path: Flutter/ephemeral/.symlinks/plugins/pdfrx/darwin
+  rar:
+    :path: Flutter/ephemeral/.symlinks/plugins/rar/macos
   rhttp:
     :path: Flutter/ephemeral/.symlinks/plugins/rhttp/macos
   screen_retriever_macos:
@@ -151,11 +161,13 @@ SPEC CHECKSUMS:
   OrderedSet: e539b66b644ff081c73a262d24ad552a69be3a94
   path_provider_foundation: 080d55be775b7414fd5a5ef3ac137b97b097e564
   pdfrx: 310e84d01e06fd2af26e16507a0e48c27e99195c
+  rar: bea203a640a83e62c47f6e110dd6af83a7e56ac3
   rhttp: 08d791d6373089de796318f4cfb172cbcf34e78b
   screen_retriever_macos: 452e51764a9e1cdb74b3c541238795849f21557f
   share_plus: 510bf0af1a42cd602274b4629920c9649c52f4cc
   sqlite3: 3c950dc86011117c307eb0b28c4a7bb449dce9f1
   sqlite3_flutter_libs: 3c323550ef3b928bc0aa9513c841e45a7d242832
+  UnrarKit: 62f535c7a34ec52d2514b9b148f33dcfa9a9dc39
   url_launcher_macos: 0fba8ddabfc33ce0a9afe7c5fef5aab3d8d2d673
   window_manager: 1d01fa7ac65a6e6f83b965471b1a7fdd3f06166c
   zip_flutter: 84647ba324a4827db98058f749394752867ac052

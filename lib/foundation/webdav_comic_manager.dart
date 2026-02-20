@@ -3,6 +3,7 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:crypto/crypto.dart';
 import 'package:venera/foundation/app.dart';
@@ -40,6 +41,18 @@ class WebDavFile {
       modifiedTime: webdavFile.mTime,
     );
   }
+}
+
+class WebDavRangeReadResult {
+  final Uint8List bytes;
+  final int? totalSize;
+  final bool isPartial;
+
+  const WebDavRangeReadResult({
+    required this.bytes,
+    required this.totalSize,
+    required this.isPartial,
+  });
 }
 
 /// WebDAV 漫画管理器（单例）
@@ -199,6 +212,110 @@ class WebDavComicManager with ChangeNotifier {
       var bytes = await client.read(fullPath);
       return Uint8List.fromList(bytes);
     });
+  }
+
+  /// 按字节范围读取文件内容
+  ///
+  /// [path] 相对于 basePath 的路径
+  /// [start] 起始字节位置（包含）
+  /// [end] 结束字节位置（包含），为 null 时表示读取到末尾
+  Future<WebDavRangeReadResult> readFileRange(
+    String path, {
+    required int start,
+    int? end,
+  }) async {
+    if (start < 0) {
+      throw ArgumentError.value(start, 'start', 'must be >= 0');
+    }
+    if (end != null && end < start) {
+      throw ArgumentError.value(end, 'end', 'must be >= start');
+    }
+
+    return _withRetry(() async {
+      var client = _getClient();
+      var cfg = config!;
+      var fullPath = _normalizePath('${cfg['basePath']}$path');
+      var rangeHeader = end == null ? 'bytes=$start-' : 'bytes=$start-$end';
+
+      Log.info('WebDavComicManager', 'Reading range: $fullPath [$rangeHeader]');
+
+      var response = await client.c.req<List<int>>(
+        client,
+        'GET',
+        fullPath,
+        optionsHandler: (options) {
+          options.responseType = ResponseType.bytes;
+          options.headers ??= {};
+          options.headers!['range'] = rangeHeader;
+        },
+      );
+      var statusCode = response.statusCode ?? 0;
+      if (statusCode != 206 && statusCode != 200) {
+        throw Exception('Unexpected response status: $statusCode');
+      }
+
+      var rawData = response.data ?? const <int>[];
+      var allBytes = Uint8List.fromList(rawData);
+      var totalSize = _parseTotalSizeFromHeaders(response.headers);
+
+      if (statusCode == 206) {
+        return WebDavRangeReadResult(
+          bytes: allBytes,
+          totalSize: totalSize,
+          isPartial: true,
+        );
+      }
+
+      // 服务器忽略 Range，返回整文件时按请求区间切片。
+      var from = math.min(math.max(start, 0), allBytes.length);
+      var to = end == null
+          ? allBytes.length
+          : math.min(end + 1, allBytes.length);
+      var sliced = from < to
+          ? Uint8List.sublistView(allBytes, from, to)
+          : Uint8List(0);
+      return WebDavRangeReadResult(
+        bytes: sliced,
+        totalSize: totalSize ?? allBytes.length,
+        isPartial: false,
+      );
+    });
+  }
+
+  Future<int> getFileSize(String path) async {
+    return _withRetry(() async {
+      var client = _getClient();
+      var cfg = config!;
+      var fullPath = _normalizePath('${cfg['basePath']}$path');
+
+      var file = await client.readProps(fullPath);
+      var size = file.size;
+      if (size == null || size < 0) {
+        throw Exception('Unable to determine file size: $fullPath');
+      }
+      return size;
+    });
+  }
+
+  int? _parseTotalSizeFromHeaders(Headers headers) {
+    var contentRange = headers.value('content-range');
+    if (contentRange != null) {
+      var match = RegExp(
+        r'^bytes\s+\d+-\d+/(\d+|\*)$',
+        caseSensitive: false,
+      ).firstMatch(contentRange.trim());
+      if (match != null) {
+        var value = match.group(1);
+        if (value != null && value != '*') {
+          return int.tryParse(value);
+        }
+      }
+    }
+    var contentLength = headers.value('content-length');
+    if (contentLength != null) {
+      return int.tryParse(contentLength);
+    }
+    return null;
   }
 
   /// 读取文件并直接写入本地路径

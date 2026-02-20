@@ -1,19 +1,24 @@
 // WebDAV 漫画浏览管理页面
 // @author: kirk
 
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:venera/components/components.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/comic_type.dart';
+import 'package:venera/foundation/image_provider/webdav_comic_image.dart';
 import 'package:venera/foundation/local.dart';
 import 'package:venera/foundation/log.dart';
 import 'package:venera/foundation/webdav_archive_service.dart';
 import 'package:venera/foundation/webdav_comic_manager.dart';
 import 'package:venera/foundation/webdav_mobi_service.dart';
-import 'package:venera/foundation/webdav_pdf_service.dart';
 import 'package:venera/pages/webdav_pdf_reader_page.dart';
 
 import 'package:venera/utils/translations.dart';
+import 'package:venera/utils/io.dart';
 
 class WebDavComicsPage extends StatefulWidget {
   const WebDavComicsPage({super.key});
@@ -23,6 +28,15 @@ class WebDavComicsPage extends StatefulWidget {
 }
 
 class _WebDavComicsPageState extends State<WebDavComicsPage> {
+  static const int _largeDirectoryThreshold = 500;
+  static const int _directoryCoverSearchMaxDepth = 4;
+  static const int _directoryCoverSearchBranchPerLevel = 8;
+  static const int _directoryCoverSearchMaxDirectoryVisits = 24;
+  static const int _maxCoverResolveConcurrency = 3;
+  static const int _maxCoverPrefetchConcurrency = 2;
+  static const int _prefetchLimitNormalDirectory = 120;
+  static const int _prefetchLimitLargeDirectory = 36;
+
   final _manager = WebDavComicManager();
 
   // 配置
@@ -40,6 +54,19 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   List<LocalComic> _scannedComics = [];
   String? _error;
   String? _cacheSize;
+  final Map<String, Future<String?>> _directoryCoverFutureCache = {};
+  final Map<String, Future<String?>> _mobiCoverFutureCache = {};
+  final Map<String, Future<String?>> _archiveCoverFutureCache = {};
+  final Map<String, Future<String?>> _mobiCoverBuildFutureCache = {};
+  final Map<String, Future<String?>> _archiveCoverBuildFutureCache = {};
+  final Map<String, Future<void>> _remoteCoverCacheInFlight = {};
+  bool _isLargeDirectory = false;
+  int _coverResolveInFlight = 0;
+  final List<Completer<void>> _coverResolveQueue = [];
+  int _coverPrefetchInFlight = 0;
+  final List<Completer<void>> _coverPrefetchQueue = [];
+  int _coverPrefetchSession = 0;
+  Timer? _coverRefreshTimer;
 
   // 显示模式
   _ViewMode _viewMode = _ViewMode.browse;
@@ -68,6 +95,20 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
 
   @override
   void dispose() {
+    _coverPrefetchSession++;
+    for (var waiter in _coverResolveQueue) {
+      if (!waiter.isCompleted) {
+        waiter.complete();
+      }
+    }
+    for (var waiter in _coverPrefetchQueue) {
+      if (!waiter.isCompleted) {
+        waiter.complete();
+      }
+    }
+    _coverResolveQueue.clear();
+    _coverPrefetchQueue.clear();
+    _coverRefreshTimer?.cancel();
     _urlController.dispose();
     _usernameController.dispose();
     _passwordController.dispose();
@@ -128,14 +169,26 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
         }
         return a.name.compareTo(b.name);
       });
+      var isLargeDirectory = files.length > _largeDirectoryThreshold;
       if (mounted) {
         setState(() {
           _currentPath = path;
           _currentFiles = files;
           _isBrowsing = false;
           _viewMode = _ViewMode.browse;
+          _isLargeDirectory = isLargeDirectory;
         });
       }
+      if (_directoryCoverFutureCache.length > 1200) {
+        _directoryCoverFutureCache.clear();
+      }
+      if (_mobiCoverFutureCache.length > 1200) {
+        _mobiCoverFutureCache.clear();
+      }
+      if (_archiveCoverFutureCache.length > 1200) {
+        _archiveCoverFutureCache.clear();
+      }
+      _prefetchListCovers(path, files, isLargeDirectory);
     } catch (e, s) {
       Log.error('WebDavComicsPage', 'Failed to list directory: $e', s);
       if (mounted) {
@@ -145,6 +198,142 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
         });
       }
     }
+  }
+
+  void _prefetchListCovers(
+    String basePath,
+    List<WebDavFile> files,
+    bool isLargeDirectory,
+  ) {
+    _coverPrefetchSession++;
+    final session = _coverPrefetchSession;
+    final candidates = files
+        .where(
+          (f) => f.isDirectory || _isMobiFile(f.name) || _isArchiveFile(f.name),
+        )
+        .take(
+          isLargeDirectory
+              ? _prefetchLimitLargeDirectory
+              : _prefetchLimitNormalDirectory,
+        )
+        .toList();
+    if (candidates.isEmpty) return;
+
+    for (final file in candidates) {
+      final path = _joinPath(basePath, file.name);
+      unawaited(_prefetchCoverForEntry(path, file, session));
+    }
+  }
+
+  Future<void> _prefetchCoverForEntry(
+    String path,
+    WebDavFile file,
+    int session,
+  ) async {
+    if (session != _coverPrefetchSession) return;
+
+    try {
+      if (file.isDirectory) {
+        final remoteCoverPath = await _resolveDirectoryCover(path);
+        if (remoteCoverPath == null || session != _coverPrefetchSession) {
+          return;
+        }
+        await _runWithCoverPrefetchSlot(
+          () => _cacheRemoteImage(remoteCoverPath),
+        );
+        if (session == _coverPrefetchSession) {
+          _scheduleCoverRefresh();
+        }
+        return;
+      }
+
+      if (_isMobiFile(file.name)) {
+        final localCoverPath = await _ensureMobiFileCover(path, file);
+        if (localCoverPath != null && session == _coverPrefetchSession) {
+          _scheduleCoverRefresh();
+        }
+        return;
+      }
+
+      if (_isArchiveFile(file.name)) {
+        final localCoverPath = await _ensureArchiveFileCover(path, file);
+        if (localCoverPath != null && session == _coverPrefetchSession) {
+          _scheduleCoverRefresh();
+        }
+      }
+    } catch (e, s) {
+      Log.warning('WebDavComicsPage', 'Failed to prefetch cover for $path: $e');
+      Log.warning('WebDavComicsPage', s.toString());
+    }
+  }
+
+  Future<T> _runWithCoverPrefetchSlot<T>(Future<T> Function() task) async {
+    while (_coverPrefetchInFlight >= _maxCoverPrefetchConcurrency) {
+      var completer = Completer<void>();
+      _coverPrefetchQueue.add(completer);
+      await completer.future;
+    }
+    _coverPrefetchInFlight++;
+    try {
+      return await task();
+    } finally {
+      _coverPrefetchInFlight--;
+      if (_coverPrefetchQueue.isNotEmpty) {
+        _coverPrefetchQueue.removeAt(0).complete();
+      }
+    }
+  }
+
+  void _scheduleCoverRefresh() {
+    if (!mounted) return;
+    if (_coverRefreshTimer != null) return;
+    _coverRefreshTimer = Timer(const Duration(milliseconds: 120), () {
+      _coverRefreshTimer = null;
+      if (mounted) {
+        setState(() {});
+      }
+    });
+  }
+
+  Future<void> _cacheRemoteImage(String remotePath) async {
+    var inFlight = _remoteCoverCacheInFlight[remotePath];
+    if (inFlight != null) {
+      await inFlight;
+      return;
+    }
+
+    var future = Future<void>(() async {
+      final cacheFile = _getRemoteImageCacheFile(remotePath);
+      if (await cacheFile.exists()) {
+        return;
+      }
+      final bytes = await _manager.readFile(remotePath);
+      if (bytes.isEmpty) return;
+      await cacheFile.parent.create(recursive: true);
+      await cacheFile.writeAsBytes(bytes, flush: false);
+    });
+    _remoteCoverCacheInFlight[remotePath] = future;
+
+    try {
+      await future;
+    } catch (e, s) {
+      Log.warning(
+        'WebDavComicsPage',
+        'Failed to cache remote cover for $remotePath: $e\n$s',
+      );
+    } finally {
+      if (identical(_remoteCoverCacheInFlight[remotePath], future)) {
+        _remoteCoverCacheInFlight.remove(remotePath);
+      }
+    }
+  }
+
+  File _getRemoteImageCacheFile(String remotePath) {
+    var relative = remotePath;
+    if (relative.startsWith('/')) {
+      relative = relative.substring(1);
+    }
+    return File(FilePath.join(App.cachePath, 'webdav_comics', relative));
   }
 
   Future<void> _scanComics() async {
@@ -594,18 +783,12 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
 
   Future<void> _openPdfFile(String path, WebDavFile file) async {
     try {
-      showToast(message: "Loading...".tl, context: context);
-      final pdfBook = await WebDavPdfService().prepareFromWebDav(
-        remotePath: path,
-        fileName: file.name,
-        remoteSize: file.size,
-        remoteModifiedTime: file.modifiedTime,
-      );
       if (!mounted) return;
       context.to(
-        () => WebDavPdfReaderPage(
-          filePath: pdfBook.filePath,
-          title: pdfBook.title,
+        () => WebDavPdfReaderPage.webdav(
+          remotePath: path,
+          title: _stripFileExtension(file.name),
+          remoteSize: file.size,
         ),
       );
     } catch (e, s) {
@@ -683,7 +866,6 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
 
     return SliverMainAxisGroup(
       slivers: [
-        // 如果目录包含图片，显示"阅读此漫画"按钮
         if (hasImages)
           SliverToBoxAdapter(
             child: Padding(
@@ -695,69 +877,622 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
               ),
             ),
           ),
-        SliverList(
-          delegate: SliverChildBuilderDelegate((context, index) {
-            var file = _currentFiles[index];
-            return ListTile(
-              leading: Icon(
-                file.isDirectory ? Icons.folder : _getFileIcon(file.name),
-                color: file.isDirectory
-                    ? Theme.of(context).colorScheme.primary
-                    : null,
+        if (_isLargeDirectory)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Text(
+                "Large directory detected. Cover prefetch is limited to the first items."
+                    .tl,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
-              title: Text(file.name),
-              subtitle: file.isDirectory
-                  ? null
-                  : Text(_formatFileSize(file.size ?? 0)),
-              trailing: file.isDirectory
-                  ? Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.menu_book, size: 20),
-                          tooltip: "Read as comic".tl,
-                          onPressed: () {
-                            var path = _currentPath == '/'
-                                ? '/${file.name}'
-                                : '$_currentPath/${file.name}';
-                            _openDirectoryAsComic(path);
-                          },
-                        ),
-                        const Icon(Icons.chevron_right),
-                      ],
-                    )
-                  : null,
-              onTap: () {
-                if (file.isDirectory) {
-                  var newPath = _currentPath == '/'
-                      ? '/${file.name}'
-                      : '$_currentPath/${file.name}';
-                  _loadDirectory(newPath);
-                } else if (_isImageFile(file.name)) {
-                  // 点击图片文件，打开当前目录为漫画
-                  _openCurrentDirAsComic();
-                } else if (_isMobiFile(file.name)) {
-                  var path = _currentPath == '/'
-                      ? '/${file.name}'
-                      : '$_currentPath/${file.name}';
-                  _openMobiFile(path, file);
-                } else if (_isPdfFile(file.name)) {
-                  var path = _currentPath == '/'
-                      ? '/${file.name}'
-                      : '$_currentPath/${file.name}';
-                  _openPdfFile(path, file);
-                } else if (_isArchiveFile(file.name)) {
-                  var path = _currentPath == '/'
-                      ? '/${file.name}'
-                      : '$_currentPath/${file.name}';
-                  _openArchiveFile(path, file);
-                }
-              },
-            );
-          }, childCount: _currentFiles.length),
+            ),
+          ),
+        SliverPadding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          sliver: SliverGrid(
+            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 220,
+              childAspectRatio: 0.66,
+              mainAxisSpacing: 12,
+              crossAxisSpacing: 12,
+            ),
+            delegate: SliverChildBuilderDelegate((context, index) {
+              var file = _currentFiles[index];
+              return _buildBrowseCard(file);
+            }, childCount: _currentFiles.length),
+          ),
         ),
       ],
     );
+  }
+
+  Widget _buildBrowseCard(WebDavFile file) {
+    var path = _joinPath(_currentPath, file.name);
+    var subtitle = file.isDirectory
+        ? "Directory".tl
+        : _formatFileSize(file.size ?? 0);
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => _handleBrowseTap(file),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(child: _buildBrowseCardCover(file, path)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 2),
+              child: Text(
+                file.name,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+              child: Text(
+                subtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+            if (file.isDirectory)
+              SizedBox(
+                height: 34,
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextButton.icon(
+                        onPressed: () => _openDirectoryAsComic(path),
+                        icon: const Icon(Icons.menu_book, size: 16),
+                        label: Text("Read as comic".tl, maxLines: 1),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: "Open".tl,
+                      onPressed: () => _loadDirectory(path),
+                      icon: const Icon(Icons.chevron_right),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBrowseCardCover(WebDavFile file, String path) {
+    if (file.isDirectory) {
+      return FutureBuilder<String?>(
+        future: _resolveDirectoryCover(path),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return _buildCoverPlaceholder(
+              const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            );
+          }
+          var coverPath = snapshot.data;
+          if (coverPath != null) {
+            return _buildRemoteCover(coverPath);
+          }
+          return _buildCoverPlaceholder(
+            Icon(
+              Icons.folder,
+              size: 44,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+          );
+        },
+      );
+    }
+
+    if (_isImageFile(file.name)) {
+      return _buildRemoteCover(path);
+    }
+
+    if (_isMobiFile(file.name)) {
+      return FutureBuilder<String?>(
+        future: _resolveMobiFileCover(path, file),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return _buildCoverPlaceholder(
+              const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            );
+          }
+          var localCoverPath = snapshot.data;
+          if (localCoverPath != null) {
+            return _buildLocalCover(localCoverPath);
+          }
+          return _buildCoverPlaceholder(
+            Icon(
+              Icons.menu_book,
+              size: 40,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          );
+        },
+      );
+    }
+
+    if (_isArchiveFile(file.name)) {
+      return FutureBuilder<String?>(
+        future: _resolveArchiveFileCover(path, file),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return _buildCoverPlaceholder(
+              const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            );
+          }
+          var localCoverPath = snapshot.data;
+          if (localCoverPath != null) {
+            return _buildLocalCover(localCoverPath);
+          }
+          return _buildCoverPlaceholder(
+            Icon(
+              Icons.archive,
+              size: 40,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          );
+        },
+      );
+    }
+
+    return _buildCoverPlaceholder(
+      Icon(
+        _getFileIcon(file.name),
+        size: 40,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
+    );
+  }
+
+  Widget _buildCoverPlaceholder(Widget child) {
+    return Container(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      alignment: Alignment.center,
+      child: child,
+    );
+  }
+
+  Widget _buildRemoteCover(String remotePath) {
+    return Image(
+      image: WebDavComicImageProvider(remotePath),
+      fit: BoxFit.cover,
+      errorBuilder: (context, _, __) => _buildCoverPlaceholder(
+        Icon(
+          Icons.broken_image_outlined,
+          size: 40,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLocalCover(String localPath) {
+    return Image.file(
+      File(localPath),
+      fit: BoxFit.cover,
+      errorBuilder: (context, _, __) => _buildCoverPlaceholder(
+        Icon(
+          Icons.broken_image_outlined,
+          size: 40,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+
+  Future<String?> _resolveMobiFileCover(String remotePath, WebDavFile file) {
+    var key = _buildFileCoverCacheKey(remotePath, file);
+    var cached = _mobiCoverFutureCache[key];
+    if (cached != null) {
+      return cached;
+    }
+
+    var future = Future<String?>(() async {
+      try {
+        var cachedMobiCover = _findCachedMobiCover(remotePath);
+        if (cachedMobiCover != null) {
+          return cachedMobiCover;
+        }
+
+        var previewFile = _getMobiPreviewFile(remotePath);
+        if (await previewFile.exists()) {
+          return previewFile.path;
+        }
+        return null;
+      } catch (e, s) {
+        Log.warning(
+          'WebDavComicsPage',
+          'Failed to resolve mobi cover for $remotePath: $e\n$s',
+        );
+        return null;
+      }
+    });
+    _mobiCoverFutureCache[key] = future;
+    future.then((value) {
+      if (value == null) {
+        _mobiCoverFutureCache.remove(key);
+      }
+    });
+    return future;
+  }
+
+  Future<String?> _ensureMobiFileCover(String remotePath, WebDavFile file) {
+    var key = _buildFileCoverCacheKey(remotePath, file);
+    var cachedBuild = _mobiCoverBuildFutureCache[key];
+    if (cachedBuild != null) {
+      return cachedBuild;
+    }
+
+    var future = Future<String?>(() async {
+      var cached = await _resolveMobiFileCover(remotePath, file);
+      if (cached != null) {
+        return cached;
+      }
+      var localCoverPath = await _runWithCoverPrefetchSlot(
+        () => _buildMobiFileCover(remotePath, file),
+      );
+      if (localCoverPath != null) {
+        _mobiCoverFutureCache[key] = Future.value(localCoverPath);
+      }
+      return localCoverPath;
+    });
+
+    _mobiCoverBuildFutureCache[key] = future;
+    future.whenComplete(() {
+      _mobiCoverBuildFutureCache.remove(key);
+    });
+    return future;
+  }
+
+  Future<String?> _buildMobiFileCover(
+    String remotePath,
+    WebDavFile file,
+  ) async {
+    try {
+      final mobiBook = await WebDavMobiService().prepareFromWebDav(
+        remotePath: remotePath,
+        fileName: file.name,
+        remoteSize: file.size,
+        remoteModifiedTime: file.modifiedTime,
+      );
+      final cacheDir = WebDavMobiService.decodeDirectory(mobiBook.directory);
+      if (cacheDir == null || cacheDir.isEmpty) {
+        return _findCachedMobiCover(remotePath);
+      }
+      final coverFile = File(FilePath.join(cacheDir, mobiBook.cover));
+      if (await coverFile.exists()) {
+        return coverFile.path;
+      }
+      return _findCachedMobiCover(remotePath);
+    } catch (e, s) {
+      Log.warning(
+        'WebDavComicsPage',
+        'Failed to build mobi cover for $remotePath: $e\n$s',
+      );
+      return null;
+    }
+  }
+
+  String? _findCachedMobiCover(String remotePath) {
+    var key = md5.convert(utf8.encode(remotePath)).toString();
+    var cacheDir = Directory(FilePath.join(App.cachePath, 'webdav_mobi', key));
+    if (!cacheDir.existsSync()) {
+      return null;
+    }
+    var files = cacheDir
+        .listSync()
+        .whereType<File>()
+        .where((f) => _isImageFile(f.name))
+        .toList();
+    if (files.isEmpty) {
+      return null;
+    }
+    files.sort((a, b) => a.name.compareTo(b.name));
+    return files.first.path;
+  }
+
+  File _getMobiPreviewFile(String remotePath) {
+    var key = md5.convert(utf8.encode(remotePath)).toString();
+    return File(
+      FilePath.join(App.cachePath, 'webdav_mobi_preview', '$key.bin'),
+    );
+  }
+
+  Future<String?> _resolveArchiveFileCover(String remotePath, WebDavFile file) {
+    var key = _buildFileCoverCacheKey(remotePath, file);
+    var cached = _archiveCoverFutureCache[key];
+    if (cached != null) {
+      return cached;
+    }
+
+    var future = Future<String?>(() async {
+      try {
+        return _findCachedArchiveCover(remotePath);
+      } catch (e, s) {
+        Log.warning(
+          'WebDavComicsPage',
+          'Failed to resolve archive cover for $remotePath: $e\n$s',
+        );
+        return null;
+      }
+    });
+    _archiveCoverFutureCache[key] = future;
+    future.then((value) {
+      if (value == null) {
+        _archiveCoverFutureCache.remove(key);
+      }
+    });
+    return future;
+  }
+
+  Future<String?> _ensureArchiveFileCover(String remotePath, WebDavFile file) {
+    var key = _buildFileCoverCacheKey(remotePath, file);
+    var cachedBuild = _archiveCoverBuildFutureCache[key];
+    if (cachedBuild != null) {
+      return cachedBuild;
+    }
+
+    var future = Future<String?>(() async {
+      var cached = await _resolveArchiveFileCover(remotePath, file);
+      if (cached != null) {
+        return cached;
+      }
+      var localCoverPath = await _runWithCoverPrefetchSlot(
+        () => _buildArchiveFileCover(remotePath, file),
+      );
+      if (localCoverPath != null) {
+        _archiveCoverFutureCache[key] = Future.value(localCoverPath);
+      }
+      return localCoverPath;
+    });
+
+    _archiveCoverBuildFutureCache[key] = future;
+    future.whenComplete(() {
+      _archiveCoverBuildFutureCache.remove(key);
+    });
+    return future;
+  }
+
+  Future<String?> _buildArchiveFileCover(
+    String remotePath,
+    WebDavFile file,
+  ) async {
+    try {
+      final archiveBook = await WebDavArchiveService().prepareFromWebDav(
+        remotePath: remotePath,
+        fileName: file.name,
+        remoteSize: file.size,
+        remoteModifiedTime: file.modifiedTime,
+      );
+      final cacheDir = WebDavArchiveService.decodeDirectory(
+        archiveBook.directory,
+      );
+      if (cacheDir == null || cacheDir.isEmpty) {
+        return _findCachedArchiveCover(remotePath);
+      }
+      final coverFile = File(FilePath.join(cacheDir, archiveBook.cover));
+      if (await coverFile.exists()) {
+        return coverFile.path;
+      }
+      return _findCachedArchiveCover(remotePath);
+    } catch (e, s) {
+      Log.warning(
+        'WebDavComicsPage',
+        'Failed to build archive cover for $remotePath: $e\n$s',
+      );
+      return null;
+    }
+  }
+
+  String? _findCachedArchiveCover(String remotePath) {
+    var key = md5.convert(utf8.encode(remotePath)).toString();
+    var cacheDir = Directory(
+      FilePath.join(App.cachePath, 'webdav_archive', key),
+    );
+    if (!cacheDir.existsSync()) {
+      return null;
+    }
+
+    try {
+      var metadataFile = cacheDir.joinFile('meta.json');
+      if (metadataFile.existsSync()) {
+        var metadata = jsonDecode(metadataFile.readAsStringSync());
+        if (metadata is Map && metadata['cover'] is String) {
+          var cover = (metadata['cover'] as String).trim();
+          if (cover.isNotEmpty) {
+            var coverFile = cacheDir.joinFile(cover);
+            if (coverFile.existsSync()) {
+              return coverFile.path;
+            }
+          }
+        }
+      }
+    } catch (_) {
+      // ignore broken metadata
+    }
+
+    var files = cacheDir
+        .listSync()
+        .whereType<File>()
+        .where((f) => _isImageFile(f.name))
+        .toList();
+    if (files.isEmpty) {
+      return null;
+    }
+    files.sort((a, b) => a.name.compareTo(b.name));
+    return files.first.path;
+  }
+
+  String _buildFileCoverCacheKey(String remotePath, WebDavFile file) {
+    return '$remotePath|${file.size ?? -1}|${file.modifiedTime?.millisecondsSinceEpoch ?? -1}';
+  }
+
+  Future<String?> _resolveDirectoryCover(String directoryPath) {
+    var cached = _directoryCoverFutureCache[directoryPath];
+    if (cached != null) {
+      return cached;
+    }
+
+    var future = _runWithCoverResolveSlot(() async {
+      try {
+        return await _findDirectoryCoverRecursive(directoryPath, 0);
+      } catch (e, s) {
+        Log.warning(
+          'WebDavComicsPage',
+          'Failed to resolve cover for $directoryPath: $e\n$s',
+        );
+        return null;
+      }
+    });
+    _directoryCoverFutureCache[directoryPath] = future;
+    future.then((value) {
+      if (value == null) {
+        _directoryCoverFutureCache.remove(directoryPath);
+      }
+    });
+    return future;
+  }
+
+  Future<String?> _findDirectoryCoverRecursive(
+    String directoryPath,
+    int depth,
+  ) async {
+    var queue = <_CoverSearchNode>[_CoverSearchNode(directoryPath, depth)];
+    var visited = 0;
+
+    while (queue.isNotEmpty &&
+        visited < _directoryCoverSearchMaxDirectoryVisits) {
+      var node = queue.removeAt(0);
+      visited++;
+
+      var files = await _manager.listDirectory(node.path);
+      var directCover = _pickFirstImageInDirectory(node.path, files);
+      if (directCover != null) {
+        return directCover;
+      }
+
+      if (node.depth >= _directoryCoverSearchMaxDepth) {
+        continue;
+      }
+
+      var subDirs = files.where((f) => f.isDirectory).toList();
+      subDirs.sort(_compareWebDavFileName);
+      for (
+        var i = 0;
+        i < subDirs.length && i < _directoryCoverSearchBranchPerLevel;
+        i++
+      ) {
+        queue.add(
+          _CoverSearchNode(
+            _joinPath(node.path, subDirs[i].name),
+            node.depth + 1,
+          ),
+        );
+      }
+    }
+    return null;
+  }
+
+  String? _pickFirstImageInDirectory(
+    String directoryPath,
+    List<WebDavFile> files,
+  ) {
+    var images = files
+        .where((f) => !f.isDirectory && _isImageFile(f.name))
+        .toList();
+    if (images.isEmpty) {
+      return null;
+    }
+    images.sort(_compareWebDavFileName);
+    var cover = images.firstWhere(
+      (f) => f.name.toLowerCase().startsWith('cover'),
+      orElse: () => images.first,
+    );
+    return _joinPath(directoryPath, cover.name);
+  }
+
+  Future<T> _runWithCoverResolveSlot<T>(Future<T> Function() task) async {
+    while (_coverResolveInFlight >= _maxCoverResolveConcurrency) {
+      var completer = Completer<void>();
+      _coverResolveQueue.add(completer);
+      await completer.future;
+    }
+    _coverResolveInFlight++;
+    try {
+      return await task();
+    } finally {
+      _coverResolveInFlight--;
+      if (_coverResolveQueue.isNotEmpty) {
+        _coverResolveQueue.removeAt(0).complete();
+      }
+    }
+  }
+
+  int _compareWebDavFileName(WebDavFile a, WebDavFile b) {
+    var aNum = int.tryParse(a.name.split('.').first);
+    var bNum = int.tryParse(b.name.split('.').first);
+    if (aNum != null && bNum != null) {
+      return aNum.compareTo(bNum);
+    }
+    return a.name.compareTo(b.name);
+  }
+
+  String _joinPath(String parent, String name) {
+    return parent == '/' ? '/$name' : '$parent/$name';
+  }
+
+  void _handleBrowseTap(WebDavFile file) {
+    var path = _joinPath(_currentPath, file.name);
+    if (file.isDirectory) {
+      _loadDirectory(path);
+      return;
+    }
+
+    if (_isImageFile(file.name)) {
+      _openCurrentDirAsComic();
+      return;
+    }
+
+    if (_isMobiFile(file.name)) {
+      _openMobiFile(path, file);
+      return;
+    }
+
+    if (_isPdfFile(file.name)) {
+      _openPdfFile(path, file);
+      return;
+    }
+
+    if (_isArchiveFile(file.name)) {
+      _openArchiveFile(path, file);
+    }
   }
 
   bool _isImageFile(String filename) {
@@ -769,6 +1504,12 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
       'gif',
       'jpe',
       'avif',
+      'bmp',
+      'tif',
+      'tiff',
+      'jfif',
+      'heic',
+      'heif',
     ];
     var ext = filename.split('.').last.toLowerCase();
     return imageExtensions.contains(ext);
@@ -962,6 +1703,21 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
     }
     return '${(bytes / 1024 / 1024 / 1024).toStringAsFixed(1)}GB';
   }
+
+  String _stripFileExtension(String fileName) {
+    var index = fileName.lastIndexOf('.');
+    if (index > 0) {
+      return fileName.substring(0, index).trim();
+    }
+    return fileName.trim();
+  }
 }
 
 enum _ViewMode { browse, scanned }
+
+class _CoverSearchNode {
+  final String path;
+  final int depth;
+
+  const _CoverSearchNode(this.path, this.depth);
+}
