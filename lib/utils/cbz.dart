@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter_7zip/flutter_7zip.dart';
+import 'package:rar/rar.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/foundation/comic_type.dart';
@@ -59,7 +60,7 @@ class ComicChapter {
   ComicChapter({required this.title, required this.start, required this.end});
 }
 
-/// Comic Book Archive. Currently supports CBZ, ZIP and 7Z formats.
+/// Comic Book Archive. Currently supports CBZ/ZIP, 7Z/CB7 and RAR/CBR formats.
 abstract class CBZ {
   static Future<FileType> checkType(File file) async {
     var header = <int>[];
@@ -76,6 +77,18 @@ abstract class CBZ {
       await ZipFile.openAndExtractAsync(file.path, out.path, 4);
     } else if (fileType.mime == "application/x-7z-compressed") {
       await SZArchive.extractIsolates(file.path, out.path, 4);
+    } else if (fileType.mime == 'application/vnd.rar') {
+      var result = await Rar.extractRarFile(
+        rarFilePath: file.path,
+        destinationPath: out.path,
+      );
+      if (result['success'] != true) {
+        var message = result['message']?.toString().trim();
+        if (message != null && message.isNotEmpty) {
+          throw Exception(message);
+        }
+        throw Exception('Failed to extract rar archive');
+      }
     } else {
       throw Exception('Unsupported archive type');
     }
@@ -303,4 +316,3 @@ abstract class CBZ {
     await ZipFile.compressFolderAsync(src, dst, 4);
   }
 }
-

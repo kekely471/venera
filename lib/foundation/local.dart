@@ -9,6 +9,7 @@ import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/favorites.dart';
 import 'package:venera/foundation/log.dart';
+import 'package:venera/foundation/webdav_archive_service.dart';
 import 'package:venera/foundation/webdav_comic_manager.dart';
 import 'package:venera/foundation/webdav_mobi_service.dart';
 import 'package:venera/network/download.dart';
@@ -82,6 +83,10 @@ class LocalComic with HistoryMixin implements Comic {
     var mobiDir = WebDavMobiService.decodeDirectory(directory);
     if (mobiDir != null) {
       return mobiDir;
+    }
+    var archiveDir = WebDavArchiveService.decodeDirectory(directory);
+    if (archiveDir != null) {
+      return archiveDir;
     }
     return (directory.contains('/') || directory.contains('\\'))
         ? directory
@@ -496,6 +501,11 @@ class LocalManager with ChangeNotifier {
       return await _getWebDavMobiImages(comic);
     }
 
+    if (type == ComicType.webdav &&
+        WebDavArchiveService.isArchiveDirectory(comic.directory)) {
+      return await _getWebDavArchiveImages(comic);
+    }
+
     if (type == ComicType.webdav) {
       return await _getWebDavImages(comic, ep);
     }
@@ -553,6 +563,37 @@ class LocalManager with ChangeNotifier {
     }
     if (files.isEmpty) {
       throw "No images found in mobi cache";
+    }
+    files.sort((a, b) {
+      var ai = int.tryParse(a.name.split('.').first);
+      var bi = int.tryParse(b.name.split('.').first);
+      if (ai != null && bi != null) {
+        return ai.compareTo(bi);
+      }
+      return a.name.compareTo(b.name);
+    });
+    return files.map((e) => "file://${e.path}").toList();
+  }
+
+  Future<List<String>> _getWebDavArchiveImages(LocalComic comic) async {
+    var dirPath = WebDavArchiveService.decodeDirectory(comic.directory);
+    if (dirPath == null) {
+      throw "Invalid archive cache path";
+    }
+    var directory = Directory(dirPath);
+    if (!await directory.exists()) {
+      throw "Archive cache not found";
+    }
+
+    var files = <File>[];
+    await for (var entity in directory.list()) {
+      if (entity is! File) continue;
+      if (entity.name.startsWith('.')) continue;
+      if (!_isImageFile(entity.name)) continue;
+      files.add(entity);
+    }
+    if (files.isEmpty) {
+      throw "No images found in archive cache";
     }
     files.sort((a, b) {
       var ai = int.tryParse(a.name.split('.').first);
@@ -790,8 +831,13 @@ class LocalManager with ChangeNotifier {
       if (mobiDir != null) {
         Directory(mobiDir).deleteIgnoreError(recursive: true);
       } else {
-        var cacheDir = _getWebDavImageCacheDir(c.directory);
-        cacheDir.deleteIgnoreError(recursive: true);
+        var archiveDir = WebDavArchiveService.decodeDirectory(c.directory);
+        if (archiveDir != null) {
+          Directory(archiveDir).deleteIgnoreError(recursive: true);
+        } else {
+          var cacheDir = _getWebDavImageCacheDir(c.directory);
+          cacheDir.deleteIgnoreError(recursive: true);
+        }
       }
     }
     // Deleting a local comic means that it's no longer available, thus both favorite and history should be deleted.
@@ -866,7 +912,12 @@ class LocalManager with ChangeNotifier {
           if (mobiDir != null) {
             webdavCacheDirs.add(Directory(mobiDir));
           } else {
-            webdavCacheDirs.add(_getWebDavImageCacheDir(c.directory));
+            var archiveDir = WebDavArchiveService.decodeDirectory(c.directory);
+            if (archiveDir != null) {
+              webdavCacheDirs.add(Directory(archiveDir));
+            } else {
+              webdavCacheDirs.add(_getWebDavImageCacheDir(c.directory));
+            }
           }
         }
         _db.execute('DELETE FROM comics WHERE id = ? AND comic_type = ?;', [

@@ -201,6 +201,22 @@ class WebDavComicManager with ChangeNotifier {
     });
   }
 
+  /// 读取文件并直接写入本地路径
+  ///
+  /// [path] 相对于 basePath 的路径
+  Future<void> readFileToLocal(String path, String savePath) async {
+    return _withRetry(() async {
+      var client = _getClient();
+      var cfg = config!;
+      var fullPath = _normalizePath('${cfg['basePath']}$path');
+      var outFile = File(savePath);
+      await outFile.parent.create(recursive: true);
+
+      Log.info('WebDavComicManager', 'Reading file to local: $fullPath');
+      await client.read2File(fullPath, outFile.path);
+    });
+  }
+
   /// 扫描漫画目录（递归）
   ///
   /// [path] 相对于 basePath 的路径，默认为根目录 "/"
@@ -336,7 +352,12 @@ class WebDavComicManager with ChangeNotifier {
   /// 获取缓存大小（字节）
   Future<int> getCacheSize() async {
     var totalSize = 0;
-    for (var dirName in const ['webdav_comics', 'webdav_mobi', 'webdav_pdf']) {
+    for (var dirName in const [
+      'webdav_comics',
+      'webdav_mobi',
+      'webdav_pdf',
+      'webdav_archive',
+    ]) {
       var cacheDir = Directory('${App.cachePath}/$dirName');
       if (!await cacheDir.exists()) continue;
       await for (var entity in cacheDir.list(recursive: true)) {
@@ -350,7 +371,12 @@ class WebDavComicManager with ChangeNotifier {
 
   /// 清除缓存
   Future<void> clearCache() async {
-    for (var dirName in const ['webdav_comics', 'webdav_mobi', 'webdav_pdf']) {
+    for (var dirName in const [
+      'webdav_comics',
+      'webdav_mobi',
+      'webdav_pdf',
+      'webdav_archive',
+    ]) {
       var cacheDir = Directory('${App.cachePath}/$dirName');
       if (await cacheDir.exists()) {
         await cacheDir.delete(recursive: true);

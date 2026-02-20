@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/local.dart';
+import 'package:venera/foundation/webdav_archive_service.dart';
 import 'package:venera/foundation/webdav_comic_manager.dart';
 import 'package:venera/foundation/webdav_mobi_service.dart';
 import 'package:venera/network/images.dart';
@@ -30,6 +31,14 @@ class HistoryImageProvider
           var mobiDir = WebDavMobiService.decodeDirectory(localComic.directory);
           if (mobiDir != null) {
             return File(FilePath.join(mobiDir, localComic.cover)).readAsBytes();
+          }
+          var archiveDir = WebDavArchiveService.decodeDirectory(
+            localComic.directory,
+          );
+          if (archiveDir != null) {
+            return File(
+              FilePath.join(archiveDir, localComic.cover),
+            ).readAsBytes();
           }
           var coverRemotePath = localComic.hasChapters
               ? "${localComic.directory}/${localComic.chapters!.ids.first}/${localComic.cover}"

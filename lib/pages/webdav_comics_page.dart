@@ -7,6 +7,7 @@ import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/local.dart';
 import 'package:venera/foundation/log.dart';
+import 'package:venera/foundation/webdav_archive_service.dart';
 import 'package:venera/foundation/webdav_comic_manager.dart';
 import 'package:venera/foundation/webdav_mobi_service.dart';
 import 'package:venera/foundation/webdav_pdf_service.dart';
@@ -615,6 +616,36 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
     }
   }
 
+  Future<void> _openArchiveFile(String path, WebDavFile file) async {
+    try {
+      showToast(message: "Loading...".tl, context: context);
+      final archiveBook = await WebDavArchiveService().prepareFromWebDav(
+        remotePath: path,
+        fileName: file.name,
+        remoteSize: file.size,
+        remoteModifiedTime: file.modifiedTime,
+      );
+      var comic = LocalComic(
+        id: archiveBook.id,
+        title: archiveBook.title,
+        subtitle: archiveBook.subtitle,
+        tags: archiveBook.tags,
+        directory: archiveBook.directory,
+        chapters: null,
+        cover: archiveBook.cover,
+        comicType: ComicType.webdav,
+        downloadedChapters: <String>[],
+        createdAt: archiveBook.createdAt,
+      );
+      await _syncComicAndRead(comic);
+    } catch (e, s) {
+      Log.error('WebDavComicsPage', 'Failed to open archive file: $e', s);
+      if (mounted) {
+        showToast(message: "Error: $e", context: context);
+      }
+    }
+  }
+
   Future<void> _syncComicAndRead(
     LocalComic comic, {
     bool showImportedMessage = false,
@@ -715,6 +746,11 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
                       ? '/${file.name}'
                       : '$_currentPath/${file.name}';
                   _openPdfFile(path, file);
+                } else if (_isArchiveFile(file.name)) {
+                  var path = _currentPath == '/'
+                      ? '/${file.name}'
+                      : '$_currentPath/${file.name}';
+                  _openArchiveFile(path, file);
                 }
               },
             );
@@ -745,6 +781,11 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
 
   bool _isPdfFile(String filename) {
     return filename.split('.').last.toLowerCase() == 'pdf';
+  }
+
+  bool _isArchiveFile(String filename) {
+    const archiveExtensions = ['zip', 'cbz', '7z', 'cb7', 'rar', 'cbr'];
+    return archiveExtensions.contains(filename.split('.').last.toLowerCase());
   }
 
   Widget _buildScannedComics() {
@@ -903,7 +944,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   IconData _getFileIcon(String filename) {
     var ext = filename.split('.').last.toLowerCase();
     const imageExts = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif'];
-    const archiveExts = ['zip', 'cbz', 'rar', 'cb7', '7z'];
+    const archiveExts = ['zip', 'cbz', 'rar', 'cbr', 'cb7', '7z'];
     if (imageExts.contains(ext)) return Icons.image;
     if (ext == 'mobi' || ext == 'azw' || ext == 'azw3' || ext == 'azw4') {
       return Icons.menu_book;
