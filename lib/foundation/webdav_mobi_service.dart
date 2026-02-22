@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 import 'package:dart_mobi/dart_mobi.dart';
 import 'package:enough_convert/enough_convert.dart';
 import 'package:venera/foundation/app.dart';
+import 'package:venera/foundation/log.dart';
 import 'package:venera/foundation/webdav_comic_manager.dart';
 import 'package:venera/utils/io.dart';
 
@@ -40,7 +41,9 @@ class WebDavMobiService {
   }
 
   static const String mobiDirectoryPrefix = 'webdav-mobi://';
+  static const String streamDirectoryPrefix = 'webdav-mobi-stream://';
   static const int _metaSchemaVersion = 3;
+  static const int _streamMetaSchemaVersion = 1;
 
   static bool isMobiDirectory(String directory) {
     return directory.startsWith(mobiDirectoryPrefix);
@@ -55,6 +58,25 @@ class WebDavMobiService {
     try {
       return Uri.decodeComponent(
         encodedPath.substring(mobiDirectoryPrefix.length),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static bool isStreamDirectory(String directory) {
+    return directory.startsWith(streamDirectoryPrefix);
+  }
+
+  static String encodeStreamDirectory(String metaDirPath) {
+    return '$streamDirectoryPrefix${Uri.encodeComponent(metaDirPath)}';
+  }
+
+  static String? decodeStreamDirectory(String encodedPath) {
+    if (!isStreamDirectory(encodedPath)) return null;
+    try {
+      return Uri.decodeComponent(
+        encodedPath.substring(streamDirectoryPrefix.length),
       );
     } catch (_) {
       return null;
@@ -359,6 +381,672 @@ class WebDavMobiService {
     r'[ÃÂÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ]',
   );
 
+  /// 通过 Range 请求仅下载 MOBI 头部，解析并缓存流式元数据。
+  /// 成功返回 WebDavMobiBook（directory 使用 stream 前缀），失败返回 null。
+  Future<WebDavMobiBook?> prepareStreamingMeta({
+    required String remotePath,
+    required String fileName,
+    int? remoteSize,
+    DateTime? remoteModifiedTime,
+  }) async {
+    remotePath = _normalizeRemotePath(remotePath);
+    final key = md5.convert(utf8.encode(remotePath)).toString();
+    final metaDir = Directory(
+      FilePath.join(App.cachePath, 'webdav_mobi_stream', key),
+    );
+    final metadataFile = metaDir.joinFile('meta.json');
+
+    // 1. 检查缓存
+    final existingMeta = await _loadMetadata(metadataFile);
+    if (_isStreamCacheUsable(
+      existingMeta,
+      remoteSize,
+      remoteModifiedTime,
+      metaDir,
+    )) {
+      try {
+        return _bookFromStreamMeta(existingMeta!);
+      } catch (_) {
+        // 缓存损坏，重新生成
+      }
+    }
+
+    try {
+      final manager = WebDavComicManager();
+      const tag = 'WebDavMobiService.stream';
+
+      // 2. Range 读取头部
+      const initialSize = 8 * 1024;
+      final r1 = await manager.readFileRange(
+        remotePath,
+        start: 0,
+        end: initialSize - 1,
+      );
+      Log.info(tag, 'r1: ${r1.bytes.length} bytes, isPartial=${r1.isPartial}, totalSize=${r1.totalSize}');
+      if (r1.bytes.length < 86) {
+        Log.warning(tag, 'Header too small: ${r1.bytes.length} < 86');
+        return null;
+      }
+      if (!r1.isPartial) {
+        Log.warning(tag, 'Server does not support Range (returned full file)');
+        return null;
+      }
+
+      final totalSize = r1.totalSize;
+      var headerData = r1.bytes;
+
+      // 3. 解析 PDB Header
+      var pdb = _parsePdbHeader(headerData);
+      if (pdb == null || pdb.recordCount < 2) {
+        Log.warning(tag, 'PDB parse failed or recordCount < 2: ${pdb?.recordCount}');
+        return null;
+      }
+      Log.info(tag, 'PDB: recordCount=${pdb.recordCount}, parsedOffsets=${pdb.recordOffsets.length}, tableEnd=${pdb.tableEnd}');
+
+      // Record Info Table 可能未完整下载
+      if (pdb.recordOffsets.length < pdb.recordCount) {
+        final needed = pdb.tableEnd + 4096;
+        Log.info(tag, 'Extending header read to $needed bytes for full record table');
+        final r1ext = await manager.readFileRange(
+          remotePath,
+          start: 0,
+          end: needed,
+        );
+        headerData = r1ext.bytes;
+        pdb = _parsePdbHeader(headerData);
+        if (pdb == null) {
+          Log.warning(tag, 'PDB re-parse failed after extension');
+          return null;
+        }
+        Log.info(tag, 'PDB after extension: parsedOffsets=${pdb.recordOffsets.length}');
+      }
+
+      // 4. 解析 MOBI Header
+      final record0Offset = pdb.recordOffsets[0];
+      final mobiMagicOffset = record0Offset + 16;
+      if (mobiMagicOffset + 132 > headerData.length) {
+        final needed = mobiMagicOffset + 4096;
+        final r1ext = await manager.readFileRange(
+          remotePath,
+          start: 0,
+          end: needed,
+        );
+        headerData = r1ext.bytes;
+      }
+
+      final mobi = _parseMobiHeader(headerData, record0Offset);
+      if (mobi == null) {
+        Log.warning(tag, 'MOBI header parse failed at record0Offset=$record0Offset');
+        return null;
+      }
+      Log.info(tag, 'MOBI: imageIndex=${mobi.imageIndex}, hasExth=${mobi.hasExth}, headerSize=${mobi.headerSize}');
+
+      // 5. 解析 EXTH（title, author, coverOffset）
+      var title = _stripFileExtension(fileName);
+      var author = '';
+      int? coverOffset;
+
+      if (mobi.hasExth) {
+        final exthStart = record0Offset + 16 + mobi.headerSize;
+
+        if (exthStart + 12 > headerData.length) {
+          final r2 = await manager.readFileRange(
+            remotePath,
+            start: 0,
+            end: exthStart + 4096,
+          );
+          headerData = r2.bytes;
+        }
+
+        if (exthStart + 12 <= headerData.length) {
+          final magic = _readAscii(headerData, exthStart, 4);
+          if (magic == 'EXTH') {
+            final exthLength = _readUint32BE(headerData, exthStart + 4);
+            if (exthStart + exthLength > headerData.length) {
+              final r2 = await manager.readFileRange(
+                remotePath,
+                start: 0,
+                end: exthStart + exthLength,
+              );
+              headerData = r2.bytes;
+            }
+            // tag 100=author, 201=coverOffset, 503=updatedTitle
+            final exthRecords = _parseExthRecords(
+              headerData,
+              exthStart,
+              const {100, 201, 503},
+            );
+            if (exthRecords.containsKey(503)) {
+              final decoded = _decodeText(exthRecords[503]!);
+              if (decoded.isNotEmpty) title = decoded;
+            }
+            if (exthRecords.containsKey(100)) {
+              author = _decodeText(exthRecords[100]!);
+            }
+            if (exthRecords.containsKey(201) &&
+                exthRecords[201]!.length >= 4) {
+              coverOffset = _readUint32BE(exthRecords[201]!, 0);
+            }
+          }
+        }
+      }
+
+      // 6. 确定图片 record 范围
+      var imageStartRecord = mobi.imageIndex;
+      if (imageStartRecord <= 0 ||
+          imageStartRecord >= pdb.recordCount ||
+          imageStartRecord >= pdb.recordOffsets.length) {
+        // KF8/AZW3 格式的 imageIndex 常为 0，需要通过探测定位
+        Log.info(tag, 'imageIndex=$imageStartRecord invalid, probing for image records...');
+
+        // 利用 coverOffset 作为已知图片 record 参考点
+        int? knownImageRecord;
+        if (coverOffset != null &&
+            coverOffset > 0 &&
+            coverOffset < pdb.recordCount &&
+            coverOffset < pdb.recordOffsets.length) {
+          knownImageRecord = coverOffset;
+        }
+
+        imageStartRecord = await _probeImageStartRecord(
+          manager,
+          remotePath,
+          pdb,
+          knownImageRecord,
+          totalSize,
+        );
+        if (imageStartRecord < 0) {
+          Log.warning(tag, 'Cannot find any image record by probing');
+          return null;
+        }
+        Log.info(tag, 'Probed imageStartRecord=$imageStartRecord');
+      }
+
+      // 从尾部反向探测，排除非图片 record（FLIS/FCIS 等）
+      var imageEndRecord = pdb.recordCount - 1;
+      var tailProbeFound = false;
+      for (var i = imageEndRecord;
+          i >= imageStartRecord;
+          i--) {
+        if (i >= pdb.recordOffsets.length) continue;
+        final recordStart = pdb.recordOffsets[i];
+        final int recordEnd;
+        if (i + 1 < pdb.recordOffsets.length) {
+          recordEnd = pdb.recordOffsets[i + 1] - 1;
+        } else if (totalSize != null) {
+          recordEnd = totalSize - 1;
+        } else {
+          continue;
+        }
+        if (recordEnd - recordStart + 1 < 8) {
+          continue;
+        }
+        // 下载前 8 字节检查 magic
+        final probe = await manager.readFileRange(
+          remotePath,
+          start: recordStart,
+          end: recordStart + 7,
+        );
+        if (_detectImageMagic(probe.bytes) != null) {
+          imageEndRecord = i;
+          tailProbeFound = true;
+          Log.info(tag, 'Tail probe found last image at record $i');
+          break;
+        }
+      }
+
+      if (!tailProbeFound) {
+        Log.warning(tag, 'Tail probe found no image records (start=$imageStartRecord, count=${pdb.recordCount})');
+        return null;
+      }
+
+      // 构建 imageRecords 列表
+      final imageRecords = <Map<String, int>>[];
+      for (var i = imageStartRecord; i <= imageEndRecord; i++) {
+        if (i >= pdb.recordOffsets.length) break;
+        final recordStart = pdb.recordOffsets[i];
+        final int recordEnd;
+        if (i + 1 < pdb.recordOffsets.length) {
+          recordEnd = pdb.recordOffsets[i + 1] - 1;
+        } else if (totalSize != null) {
+          recordEnd = totalSize - 1;
+        } else {
+          break;
+        }
+        if (recordEnd <= recordStart) continue;
+        if (recordEnd - recordStart + 1 > 10 * 1024 * 1024) continue;
+        imageRecords.add({'start': recordStart, 'end': recordEnd});
+      }
+
+      if (imageRecords.isEmpty) {
+        Log.warning(tag, 'No valid imageRecords built (imageStart=$imageStartRecord, imageEnd=$imageEndRecord)');
+        return null;
+      }
+
+      Log.info(tag, 'Built ${imageRecords.length} imageRecords');
+
+      // 7. 确定封面索引
+      final coverIndex =
+          (coverOffset != null && coverOffset < imageRecords.length)
+              ? coverOffset
+              : 0;
+
+      // 8. 下载并缓存封面图
+      await metaDir.deleteIgnoreError(recursive: true);
+      await metaDir.create(recursive: true);
+
+      var coverFile = 'cover.jpg';
+      final coverRecord = imageRecords[coverIndex];
+      final coverResult = await manager.readFileRange(
+        remotePath,
+        start: coverRecord['start']!,
+        end: coverRecord['end']!,
+      );
+      if (coverResult.bytes.isNotEmpty) {
+        final ext = _detectImageMagic(coverResult.bytes) ?? 'jpg';
+        coverFile = 'cover.$ext';
+        await metaDir.joinFile(coverFile).writeAsBytes(
+          coverResult.bytes,
+          flush: false,
+        );
+      }
+
+      // 9. 保存 meta.json
+      final createdAt = DateTime.now();
+      final metaMap = <String, dynamic>{
+        'schema': _streamMetaSchemaVersion,
+        'id': 'webdav_mobi_stream_$key',
+        'remotePath': remotePath,
+        'totalSize': totalSize,
+        'title': title,
+        'author': author,
+        'tags': const ['webdav:mobi'],
+        'coverIndex': coverIndex,
+        'coverFile': coverFile,
+        'imageCount': imageRecords.length,
+        'imageRecords': imageRecords,
+        'directory': encodeStreamDirectory(metaDir.path),
+        'createdAt': createdAt.millisecondsSinceEpoch,
+        'remoteSize': remoteSize,
+        'remoteModifiedTime': remoteModifiedTime?.millisecondsSinceEpoch,
+      };
+      await metadataFile.writeAsString(jsonEncode(metaMap));
+
+      Log.info(tag, 'Stream meta saved: ${imageRecords.length} images, cover=$coverFile');
+      return _bookFromStreamMeta(metaMap);
+    } catch (e, s) {
+      Log.warning(
+        'WebDavMobiService',
+        'prepareStreamingMeta failed for $remotePath: $e\n$s',
+      );
+      return null;
+    }
+  }
+
+  bool _isStreamCacheUsable(
+    Map<String, dynamic>? metadata,
+    int? remoteSize,
+    DateTime? remoteModifiedTime,
+    Directory metaDir,
+  ) {
+    if (metadata == null) return false;
+    if (metadata['schema'] != _streamMetaSchemaVersion) return false;
+    if (!metaDir.existsSync()) return false;
+
+    final remoteSizeInMeta = metadata['remoteSize'];
+    if (remoteSize != null &&
+        remoteSizeInMeta is int &&
+        remoteSizeInMeta != remoteSize) {
+      return false;
+    }
+
+    final remoteModifiedInMeta = metadata['remoteModifiedTime'];
+    if (remoteModifiedTime != null &&
+        remoteModifiedInMeta is int &&
+        remoteModifiedInMeta != remoteModifiedTime.millisecondsSinceEpoch) {
+      return false;
+    }
+
+    final imageCount = metadata['imageCount'];
+    return imageCount is int && imageCount > 0;
+  }
+
+  WebDavMobiBook _bookFromStreamMeta(Map<String, dynamic> metadata) {
+    return WebDavMobiBook(
+      id: metadata['id'] as String,
+      title: metadata['title'] as String,
+      subtitle: metadata['author'] as String? ?? '',
+      tags: List<String>.from(metadata['tags'] ?? const <String>[]),
+      directory: metadata['directory'] as String,
+      cover: metadata['coverFile'] as String? ?? 'cover.jpg',
+      createdAt: DateTime.fromMillisecondsSinceEpoch(
+        metadata['createdAt'] as int? ?? DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+  }
+
+  /// 仅通过 Range 请求获取 MOBI 文件封面图，避免全量下载。
+  /// 返回封面图片的本地文件路径，失败返回 null。
+  Future<String?> fetchCoverOnly({
+    required String remotePath,
+    int? remoteSize,
+  }) async {
+    remotePath = _normalizeRemotePath(remotePath);
+    final key = md5.convert(utf8.encode(remotePath)).toString();
+
+    final previewFile = File(
+      FilePath.join(App.cachePath, 'webdav_mobi_preview', '$key.bin'),
+    );
+    if (await previewFile.exists() && await previewFile.length() > 0) {
+      return previewFile.path;
+    }
+
+    try {
+      final manager = WebDavComicManager();
+
+      // Request 1: 读取前 8KB（覆盖 PDB Header + Record Info Table + MOBI/EXTH）
+      const initialSize = 8 * 1024;
+      final r1 = await manager.readFileRange(
+        remotePath,
+        start: 0,
+        end: initialSize - 1,
+      );
+      if (r1.bytes.length < 86) return null; // 至少 PDB Header + 1 条 Record
+
+      // 服务器不支持 Range，返回 null 由调用方 fallback
+      if (!r1.isPartial) return null;
+
+      final totalSize = r1.totalSize;
+
+      // 解析 PDB Header
+      final pdb = _parsePdbHeader(r1.bytes);
+      if (pdb == null || pdb.recordCount < 2) return null;
+
+      // 解析 MOBI Header
+      final record0Offset = pdb.recordOffsets[0];
+      var headerData = r1.bytes;
+
+      final mobiMagicOffset = record0Offset + 16;
+      if (mobiMagicOffset + 132 > headerData.length) {
+        // 数据不足，扩展读取
+        final needed = mobiMagicOffset + 4096;
+        final r1ext = await manager.readFileRange(
+          remotePath,
+          start: 0,
+          end: needed,
+        );
+        headerData = r1ext.bytes;
+      }
+
+      final mobi = _parseMobiHeader(headerData, record0Offset);
+      if (mobi == null) return null;
+
+      // 解析 EXTH 获取 coverOffset
+      int? coverOffset;
+      if (mobi.hasExth) {
+        final exthStart = record0Offset + 16 + mobi.headerSize;
+
+        if (exthStart + 12 > headerData.length) {
+          final r2 = await manager.readFileRange(
+            remotePath,
+            start: 0,
+            end: exthStart + 4096,
+          );
+          headerData = r2.bytes;
+        }
+
+        if (exthStart + 12 <= headerData.length) {
+          final magic = _readAscii(headerData, exthStart, 4);
+          if (magic == 'EXTH') {
+            final exthLength = _readUint32BE(headerData, exthStart + 4);
+            if (exthStart + exthLength > headerData.length) {
+              final r2 = await manager.readFileRange(
+                remotePath,
+                start: 0,
+                end: exthStart + exthLength,
+              );
+              headerData = r2.bytes;
+            }
+            coverOffset = _parseExthCoverOffset(headerData, exthStart);
+          }
+        }
+      }
+
+      // 计算封面 Record 编号
+      final coverRecordIndex = mobi.imageIndex + (coverOffset ?? 0);
+      if (coverRecordIndex < 0 || coverRecordIndex >= pdb.recordCount) {
+        return null;
+      }
+      if (coverRecordIndex >= pdb.recordOffsets.length) return null;
+
+      // 计算封面 Record 的字节区间
+      final coverStart = pdb.recordOffsets[coverRecordIndex];
+      final int coverEnd;
+      if (coverRecordIndex + 1 < pdb.recordOffsets.length) {
+        coverEnd = pdb.recordOffsets[coverRecordIndex + 1] - 1;
+      } else if (totalSize != null) {
+        coverEnd = totalSize - 1;
+      } else {
+        return null;
+      }
+
+      if (coverEnd <= coverStart) return null;
+      // 安全限制：单张封面不应超过 2MB
+      if (coverEnd - coverStart + 1 > 2 * 1024 * 1024) return null;
+
+      // Request 3: 获取封面图数据
+      final r3 = await manager.readFileRange(
+        remotePath,
+        start: coverStart,
+        end: coverEnd,
+      );
+      if (r3.bytes.isEmpty) return null;
+
+      // 验证是否为合法图片
+      if (_detectImageMagic(r3.bytes) == null) return null;
+
+      // 保存到预览缓存
+      await previewFile.parent.create(recursive: true);
+      await previewFile.writeAsBytes(r3.bytes, flush: false);
+
+      return previewFile.path;
+    } catch (e, s) {
+      Log.warning(
+        'WebDavMobiService',
+        'fetchCoverOnly failed for $remotePath: $e\n$s',
+      );
+      return null;
+    }
+  }
+
+  // --------------- PDB/MOBI 二进制解析工具 ---------------
+
+  int _readUint32BE(Uint8List data, int offset) {
+    return (data[offset] << 24) |
+        (data[offset + 1] << 16) |
+        (data[offset + 2] << 8) |
+        data[offset + 3];
+  }
+
+  int _readUint16BE(Uint8List data, int offset) {
+    return (data[offset] << 8) | data[offset + 1];
+  }
+
+  String _readAscii(Uint8List data, int offset, int length) {
+    if (offset + length > data.length) return '';
+    return String.fromCharCodes(data.sublist(offset, offset + length));
+  }
+
+  _PdbHeaderInfo? _parsePdbHeader(Uint8List data) {
+    if (data.length < 78 + 8) return null;
+    final recordCount = _readUint16BE(data, 76);
+    if (recordCount <= 0) return null;
+
+    final tableEnd = 78 + recordCount * 8;
+    final offsets = <int>[];
+    for (int i = 0; i < recordCount; i++) {
+      final entryOffset = 78 + i * 8;
+      if (entryOffset + 4 > data.length) break;
+      offsets.add(_readUint32BE(data, entryOffset));
+    }
+    if (offsets.isEmpty) return null;
+
+    return _PdbHeaderInfo(
+      recordCount: recordCount,
+      recordOffsets: offsets,
+      tableEnd: tableEnd,
+    );
+  }
+
+  _MobiHeaderInfo? _parseMobiHeader(Uint8List data, int record0Offset) {
+    final mobiStart = record0Offset + 16;
+    if (mobiStart + 132 > data.length) return null;
+
+    final magic = _readAscii(data, mobiStart, 4);
+    if (magic != 'MOBI') return null;
+
+    final headerSize = _readUint32BE(data, mobiStart + 4);
+    // imageIndex 位于 MOBI header 偏移 108（相对 MOBI 起始）
+    // 即 mobiStart + 108
+    final imageIndex = _readUint32BE(data, mobiStart + 108);
+    // exthFlags 位于 MOBI header 偏移 112
+    final exthFlags = _readUint32BE(data, mobiStart + 112);
+    final hasExth = (exthFlags & 0x40) != 0;
+
+    return _MobiHeaderInfo(
+      headerSize: headerSize,
+      imageIndex: imageIndex,
+      hasExth: hasExth,
+    );
+  }
+
+  int? _parseExthCoverOffset(Uint8List data, int exthStart) {
+    if (exthStart + 12 > data.length) return null;
+    final magic = _readAscii(data, exthStart, 4);
+    if (magic != 'EXTH') return null;
+
+    final recordCount = _readUint32BE(data, exthStart + 8);
+    var pos = exthStart + 12;
+
+    for (int i = 0; i < recordCount; i++) {
+      if (pos + 8 > data.length) break;
+      final tag = _readUint32BE(data, pos);
+      final size = _readUint32BE(data, pos + 4);
+      if (size < 8) break;
+
+      // tag 201 = coverOffset
+      if (tag == 201 && size >= 12 && pos + 12 <= data.length) {
+        return _readUint32BE(data, pos + 8);
+      }
+      pos += size;
+    }
+    return null;
+  }
+
+  /// 通用 EXTH 解析：一次遍历提取多个 tag 的原始数据
+  Map<int, Uint8List> _parseExthRecords(
+    Uint8List data,
+    int exthStart,
+    Set<int> targetTags,
+  ) {
+    final results = <int, Uint8List>{};
+    if (exthStart + 12 > data.length) return results;
+    final magic = _readAscii(data, exthStart, 4);
+    if (magic != 'EXTH') return results;
+
+    final recordCount = _readUint32BE(data, exthStart + 8);
+    var pos = exthStart + 12;
+
+    for (int i = 0; i < recordCount; i++) {
+      if (pos + 8 > data.length) break;
+      final tag = _readUint32BE(data, pos);
+      final size = _readUint32BE(data, pos + 4);
+      if (size < 8) break;
+
+      if (targetTags.contains(tag) && pos + size <= data.length) {
+        results[tag] = Uint8List.sublistView(data, pos + 8, pos + size);
+      }
+      pos += size;
+    }
+    return results;
+  }
+
+  /// 当 imageIndex 无效时，通过二分探测定位第一个图片 record。
+  /// 返回 record 索引，失败返回 -1。
+  Future<int> _probeImageStartRecord(
+    WebDavComicManager manager,
+    String remotePath,
+    _PdbHeaderInfo pdb,
+    int? knownImageRecord,
+    int? totalSize,
+  ) async {
+    final maxRecord = pdb.recordOffsets.length - 1;
+
+    // 1. 如果没有已知图片 record，从后往前找一个
+    if (knownImageRecord == null || knownImageRecord > maxRecord) {
+      for (var i = maxRecord; i >= 1; i--) {
+        final start = pdb.recordOffsets[i];
+        final probe = await manager.readFileRange(
+          remotePath,
+          start: start,
+          end: start + 7,
+        );
+        if (_detectImageMagic(probe.bytes) != null) {
+          knownImageRecord = i;
+          break;
+        }
+        // 最多向后探测 10 个 record
+        if (maxRecord - i >= 10) break;
+      }
+    }
+    if (knownImageRecord == null) return -1;
+
+    // 2. 从 knownImageRecord 向前二分搜索第一个图片 record
+    var lo = 1;
+    var hi = knownImageRecord;
+    while (lo < hi) {
+      final mid = (lo + hi) ~/ 2;
+      if (mid >= pdb.recordOffsets.length) {
+        lo = mid + 1;
+        continue;
+      }
+      final start = pdb.recordOffsets[mid];
+      final probe = await manager.readFileRange(
+        remotePath,
+        start: start,
+        end: start + 7,
+      );
+      if (_detectImageMagic(probe.bytes) != null) {
+        hi = mid;
+      } else {
+        lo = mid + 1;
+      }
+    }
+
+    // 3. 验证 lo 确实是图片
+    if (lo >= pdb.recordOffsets.length) return -1;
+    final start = pdb.recordOffsets[lo];
+    final probe = await manager.readFileRange(
+      remotePath,
+      start: start,
+      end: start + 7,
+    );
+    return _detectImageMagic(probe.bytes) != null ? lo : -1;
+  }
+
+  String? _detectImageMagic(Uint8List bytes) {
+    if (bytes.length < 4) return null;
+    if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) return 'jpg';
+    if (bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47) {
+      return 'png';
+    }
+    if (bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x38) {
+      return 'gif';
+    }
+    if (bytes[0] == 0x42 && bytes[1] == 0x4D) return 'bmp';
+    return null;
+  }
+
   String _normalizeRemotePath(String path) {
     if (!path.startsWith('/')) {
       path = '/$path';
@@ -421,5 +1109,29 @@ class _MobiParseResult {
     required this.tags,
     required this.coverUid,
     required this.images,
+  });
+}
+
+class _PdbHeaderInfo {
+  final int recordCount;
+  final List<int> recordOffsets;
+  final int tableEnd;
+
+  const _PdbHeaderInfo({
+    required this.recordCount,
+    required this.recordOffsets,
+    required this.tableEnd,
+  });
+}
+
+class _MobiHeaderInfo {
+  final int headerSize;
+  final int imageIndex;
+  final bool hasExth;
+
+  const _MobiHeaderInfo({
+    required this.headerSize,
+    required this.imageIndex,
+    required this.hasExth,
   });
 }

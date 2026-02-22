@@ -753,13 +753,27 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
 
   Future<void> _openMobiFile(String path, WebDavFile file) async {
     try {
-      showToast(message: "Loading...".tl, context: context);
-      var mobiBook = await WebDavMobiService().prepareFromWebDav(
+      // 优先尝试流式模式（仅下载头部元数据）
+      var mobiBook = await WebDavMobiService().prepareStreamingMeta(
         remotePath: path,
         fileName: file.name,
         remoteSize: file.size,
         remoteModifiedTime: file.modifiedTime,
       );
+
+      // 流式模式不可用时 fallback 到全量下载
+      if (mobiBook == null) {
+        if (mounted) {
+          showToast(message: "Loading...".tl, context: context);
+        }
+        mobiBook = await WebDavMobiService().prepareFromWebDav(
+          remotePath: path,
+          fileName: file.name,
+          remoteSize: file.size,
+          remoteModifiedTime: file.modifiedTime,
+        );
+      }
+
       var comic = LocalComic(
         id: mobiBook.id,
         title: mobiBook.title,
@@ -1176,6 +1190,16 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
     WebDavFile file,
   ) async {
     try {
+      // 优先尝试 Range 请求流式获取封面
+      final coverPath = await WebDavMobiService().fetchCoverOnly(
+        remotePath: remotePath,
+        remoteSize: file.size,
+      );
+      if (coverPath != null) {
+        return coverPath;
+      }
+
+      // Fallback: 全量下载解析
       final mobiBook = await WebDavMobiService().prepareFromWebDav(
         remotePath: remotePath,
         fileName: file.name,

@@ -472,6 +472,7 @@ class WebDavComicManager with ChangeNotifier {
     for (var dirName in const [
       'webdav_comics',
       'webdav_mobi',
+      'webdav_mobi_stream',
       'webdav_pdf',
       'webdav_archive',
     ]) {
@@ -491,6 +492,7 @@ class WebDavComicManager with ChangeNotifier {
     for (var dirName in const [
       'webdav_comics',
       'webdav_mobi',
+      'webdav_mobi_stream',
       'webdav_pdf',
       'webdav_archive',
     ]) {

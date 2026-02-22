@@ -497,6 +497,11 @@ class LocalManager with ChangeNotifier {
 
     // WebDAV 漫画处理
     if (type == ComicType.webdav &&
+        WebDavMobiService.isStreamDirectory(comic.directory)) {
+      return await _getWebDavMobiStreamImages(comic);
+    }
+
+    if (type == ComicType.webdav &&
         WebDavMobiService.isMobiDirectory(comic.directory)) {
       return await _getWebDavMobiImages(comic);
     }
@@ -573,6 +578,21 @@ class LocalManager with ChangeNotifier {
       return a.name.compareTo(b.name);
     });
     return files.map((e) => "file://${e.path}").toList();
+  }
+
+  Future<List<String>> _getWebDavMobiStreamImages(LocalComic comic) async {
+    var dirPath = WebDavMobiService.decodeStreamDirectory(comic.directory);
+    if (dirPath == null) {
+      throw "Invalid mobi stream path";
+    }
+    var metaFile = File(FilePath.join(dirPath, 'meta.json'));
+    if (!await metaFile.exists()) {
+      throw "Mobi stream meta not found";
+    }
+    var meta = jsonDecode(await metaFile.readAsString()) as Map<String, dynamic>;
+    var imageCount = meta['imageCount'] as int;
+    var metaKey = dirPath.split('/').last;
+    return List.generate(imageCount, (i) => 'mobi-stream://$metaKey/$i');
   }
 
   Future<List<String>> _getWebDavArchiveImages(LocalComic comic) async {

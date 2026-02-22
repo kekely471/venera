@@ -607,6 +607,17 @@ class _GalleryModeState extends State<_GalleryMode>
         return await cacheFile.readAsBytes();
       }
       return await WebDavComicManager().readFile(remotePath);
+    } else if (imageKey.startsWith("mobi-stream://")) {
+      final parts = imageKey.substring(14).split('/');
+      final cacheDir = '${App.cachePath}/webdav_mobi_stream/${parts[0]}';
+      final index = parts[1];
+      for (final ext in ['jpg', 'png', 'gif', 'bmp']) {
+        final f = File('$cacheDir/$index.$ext');
+        if (await f.exists()) {
+          return await f.readAsBytes();
+        }
+      }
+      return null;
     } else {
       return (await CacheManager().findCache(
         "$imageKey@${context.reader.type.sourceKey}@${context.reader.cid}@${context.reader.eid}",
@@ -1198,6 +1209,17 @@ class _ContinuousModeState extends State<_ContinuousMode>
         return await cacheFile.readAsBytes();
       }
       return await WebDavComicManager().readFile(remotePath);
+    } else if (imageKey.startsWith("mobi-stream://")) {
+      final parts = imageKey.substring(14).split('/');
+      final cacheDir = '${App.cachePath}/webdav_mobi_stream/${parts[0]}';
+      final index = parts[1];
+      for (final ext in ['jpg', 'png', 'gif', 'bmp']) {
+        final f = File('$cacheDir/$index.$ext');
+        if (await f.exists()) {
+          return await f.readAsBytes();
+        }
+      }
+      return null;
     } else {
       return (await CacheManager().findCache(
         "$imageKey@${context.reader.type.sourceKey}@${context.reader.cid}@${context.reader.eid}",
@@ -1224,6 +1246,10 @@ ImageProvider _createImageProviderFromKey(
 ) {
   if (imageKey.startsWith("webdav://")) {
     return WebDavComicImageProvider(imageKey.substring(9));
+  }
+  if (imageKey.startsWith("mobi-stream://")) {
+    final parts = imageKey.substring(14).split('/');
+    return WebDavMobiStreamImageProvider(parts[0], int.parse(parts[1]));
   }
   var reader = context.reader;
   return ReaderImageProvider(
@@ -1259,7 +1285,9 @@ void _preDownloadImage(int page, BuildContext context) {
   }
   var reader = context.reader;
   var imageKey = reader.images![page - 1];
-  if (imageKey.startsWith("file://") || imageKey.startsWith("webdav://")) {
+  if (imageKey.startsWith("file://") ||
+      imageKey.startsWith("webdav://") ||
+      imageKey.startsWith("mobi-stream://")) {
     return;
   }
   var cid = reader.cid;
