@@ -84,6 +84,12 @@ class LocalComic with HistoryMixin implements Comic {
     if (mobiDir != null) {
       return mobiDir;
     }
+    var archiveStreamDir = WebDavArchiveService.decodeStreamDirectory(
+      directory,
+    );
+    if (archiveStreamDir != null) {
+      return archiveStreamDir;
+    }
     var archiveDir = WebDavArchiveService.decodeDirectory(directory);
     if (archiveDir != null) {
       return archiveDir;
@@ -507,6 +513,11 @@ class LocalManager with ChangeNotifier {
     }
 
     if (type == ComicType.webdav &&
+        WebDavArchiveService.isStreamDirectory(comic.directory)) {
+      return await _getWebDavArchiveStreamImages(comic);
+    }
+
+    if (type == ComicType.webdav &&
         WebDavArchiveService.isArchiveDirectory(comic.directory)) {
       return await _getWebDavArchiveImages(comic);
     }
@@ -589,10 +600,31 @@ class LocalManager with ChangeNotifier {
     if (!await metaFile.exists()) {
       throw "Mobi stream meta not found";
     }
-    var meta = jsonDecode(await metaFile.readAsString()) as Map<String, dynamic>;
+    var meta =
+        jsonDecode(await metaFile.readAsString()) as Map<String, dynamic>;
     var imageCount = meta['imageCount'] as int;
     var metaKey = dirPath.split('/').last;
     return List.generate(imageCount, (i) => 'mobi-stream://$metaKey/$i');
+  }
+
+  Future<List<String>> _getWebDavArchiveStreamImages(LocalComic comic) async {
+    var dirPath = WebDavArchiveService.decodeStreamDirectory(comic.directory);
+    if (dirPath == null) {
+      throw "Invalid archive stream path";
+    }
+    var metaFile = File(FilePath.join(dirPath, 'meta.json'));
+    if (!await metaFile.exists()) {
+      throw "Archive stream meta not found";
+    }
+    var meta =
+        jsonDecode(await metaFile.readAsString()) as Map<String, dynamic>;
+    var imageCount = meta['imageCount'] as int?;
+    imageCount ??= meta['pages'] as int?;
+    if (imageCount == null || imageCount <= 0) {
+      throw "Archive stream image count is invalid";
+    }
+    var metaKey = dirPath.split('/').last;
+    return List.generate(imageCount, (i) => 'archive-stream://$metaKey/$i');
   }
 
   Future<List<String>> _getWebDavArchiveImages(LocalComic comic) async {
@@ -847,16 +879,28 @@ class LocalManager with ChangeNotifier {
     }
     // WebDAV 漫画删除时清除缓存
     if (c.comicType == ComicType.webdav) {
-      var mobiDir = WebDavMobiService.decodeDirectory(c.directory);
-      if (mobiDir != null) {
-        Directory(mobiDir).deleteIgnoreError(recursive: true);
+      var mobiStreamDir = WebDavMobiService.decodeStreamDirectory(c.directory);
+      if (mobiStreamDir != null) {
+        Directory(mobiStreamDir).deleteIgnoreError(recursive: true);
       } else {
-        var archiveDir = WebDavArchiveService.decodeDirectory(c.directory);
-        if (archiveDir != null) {
-          Directory(archiveDir).deleteIgnoreError(recursive: true);
+        var mobiDir = WebDavMobiService.decodeDirectory(c.directory);
+        if (mobiDir != null) {
+          Directory(mobiDir).deleteIgnoreError(recursive: true);
         } else {
-          var cacheDir = _getWebDavImageCacheDir(c.directory);
-          cacheDir.deleteIgnoreError(recursive: true);
+          var archiveStreamDir = WebDavArchiveService.decodeStreamDirectory(
+            c.directory,
+          );
+          if (archiveStreamDir != null) {
+            Directory(archiveStreamDir).deleteIgnoreError(recursive: true);
+          } else {
+            var archiveDir = WebDavArchiveService.decodeDirectory(c.directory);
+            if (archiveDir != null) {
+              Directory(archiveDir).deleteIgnoreError(recursive: true);
+            } else {
+              var cacheDir = _getWebDavImageCacheDir(c.directory);
+              cacheDir.deleteIgnoreError(recursive: true);
+            }
+          }
         }
       }
     }
@@ -928,15 +972,31 @@ class LocalManager with ChangeNotifier {
           }
         }
         if (c.comicType == ComicType.webdav) {
-          var mobiDir = WebDavMobiService.decodeDirectory(c.directory);
-          if (mobiDir != null) {
-            webdavCacheDirs.add(Directory(mobiDir));
+          var mobiStreamDir = WebDavMobiService.decodeStreamDirectory(
+            c.directory,
+          );
+          if (mobiStreamDir != null) {
+            webdavCacheDirs.add(Directory(mobiStreamDir));
           } else {
-            var archiveDir = WebDavArchiveService.decodeDirectory(c.directory);
-            if (archiveDir != null) {
-              webdavCacheDirs.add(Directory(archiveDir));
+            var mobiDir = WebDavMobiService.decodeDirectory(c.directory);
+            if (mobiDir != null) {
+              webdavCacheDirs.add(Directory(mobiDir));
             } else {
-              webdavCacheDirs.add(_getWebDavImageCacheDir(c.directory));
+              var archiveStreamDir = WebDavArchiveService.decodeStreamDirectory(
+                c.directory,
+              );
+              if (archiveStreamDir != null) {
+                webdavCacheDirs.add(Directory(archiveStreamDir));
+              } else {
+                var archiveDir = WebDavArchiveService.decodeDirectory(
+                  c.directory,
+                );
+                if (archiveDir != null) {
+                  webdavCacheDirs.add(Directory(archiveDir));
+                } else {
+                  webdavCacheDirs.add(_getWebDavImageCacheDir(c.directory));
+                }
+              }
             }
           }
         }

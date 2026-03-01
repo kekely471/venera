@@ -816,12 +816,19 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   Future<void> _openArchiveFile(String path, WebDavFile file) async {
     try {
       showToast(message: "Loading...".tl, context: context);
-      final archiveBook = await WebDavArchiveService().prepareFromWebDav(
-        remotePath: path,
-        fileName: file.name,
-        remoteSize: file.size,
-        remoteModifiedTime: file.modifiedTime,
-      );
+      final archiveBook =
+          await WebDavArchiveService().prepareStreamingMeta(
+            remotePath: path,
+            fileName: file.name,
+            remoteSize: file.size,
+            remoteModifiedTime: file.modifiedTime,
+          ) ??
+          await WebDavArchiveService().prepareFromWebDav(
+            remotePath: path,
+            fileName: file.name,
+            remoteSize: file.size,
+            remoteModifiedTime: file.modifiedTime,
+          );
       var comic = LocalComic(
         id: archiveBook.id,
         title: archiveBook.title,
@@ -1309,6 +1316,16 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
     WebDavFile file,
   ) async {
     try {
+      final streamCover = await WebDavArchiveService().fetchCoverOnly(
+        remotePath: remotePath,
+        fileName: file.name,
+        remoteSize: file.size,
+        remoteModifiedTime: file.modifiedTime,
+      );
+      if (streamCover != null) {
+        return streamCover;
+      }
+
       final archiveBook = await WebDavArchiveService().prepareFromWebDav(
         remotePath: remotePath,
         fileName: file.name,
@@ -1337,6 +1354,29 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
 
   String? _findCachedArchiveCover(String remotePath) {
     var key = md5.convert(utf8.encode(remotePath)).toString();
+    var streamCacheDir = Directory(
+      FilePath.join(App.cachePath, 'webdav_archive_stream', key),
+    );
+    if (streamCacheDir.existsSync()) {
+      try {
+        var metadataFile = streamCacheDir.joinFile('meta.json');
+        if (metadataFile.existsSync()) {
+          var metadata = jsonDecode(metadataFile.readAsStringSync());
+          if (metadata is Map && metadata['cover'] is String) {
+            var cover = (metadata['cover'] as String).trim();
+            if (cover.isNotEmpty) {
+              var coverFile = streamCacheDir.joinFile(cover);
+              if (coverFile.existsSync()) {
+                return coverFile.path;
+              }
+            }
+          }
+        }
+      } catch (_) {
+        // ignore broken metadata
+      }
+    }
+
     var cacheDir = Directory(
       FilePath.join(App.cachePath, 'webdav_archive', key),
     );

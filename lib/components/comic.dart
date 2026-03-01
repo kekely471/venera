@@ -8,14 +8,23 @@ ImageProvider? _findImageProvider(Comic comic) {
       if (mobiDir != null) {
         image = FileImage(File(FilePath.join(mobiDir, comic.cover)));
       } else {
-        var archiveDir = WebDavArchiveService.decodeDirectory(comic.directory);
-        if (archiveDir != null) {
-          image = FileImage(File(FilePath.join(archiveDir, comic.cover)));
+        var archiveStreamDir = WebDavArchiveService.decodeStreamDirectory(
+          comic.directory,
+        );
+        if (archiveStreamDir != null) {
+          image = FileImage(File(FilePath.join(archiveStreamDir, comic.cover)));
         } else {
-          var coverRemotePath = comic.hasChapters
-              ? "${comic.directory}/${comic.chapters!.ids.first}/${comic.cover}"
-              : "${comic.directory}/${comic.cover}";
-          image = WebDavComicImageProvider(coverRemotePath);
+          var archiveDir = WebDavArchiveService.decodeDirectory(
+            comic.directory,
+          );
+          if (archiveDir != null) {
+            image = FileImage(File(FilePath.join(archiveDir, comic.cover)));
+          } else {
+            var coverRemotePath = comic.hasChapters
+                ? "${comic.directory}/${comic.chapters!.ids.first}/${comic.cover}"
+                : "${comic.directory}/${comic.cover}";
+            image = WebDavComicImageProvider(coverRemotePath);
+          }
         }
       }
     } else {
@@ -38,16 +47,25 @@ ImageProvider? _findImageProvider(Comic comic) {
     if (mobiDir != null) {
       image = FileImage(File(FilePath.join(mobiDir, localComic.cover)));
     } else {
-      var archiveDir = WebDavArchiveService.decodeDirectory(
+      var archiveStreamDir = WebDavArchiveService.decodeStreamDirectory(
         localComic.directory,
       );
-      if (archiveDir != null) {
-        image = FileImage(File(FilePath.join(archiveDir, localComic.cover)));
+      if (archiveStreamDir != null) {
+        image = FileImage(
+          File(FilePath.join(archiveStreamDir, localComic.cover)),
+        );
       } else {
-        var coverRemotePath = localComic.hasChapters
-            ? "${localComic.directory}/${localComic.chapters!.ids.first}/${localComic.cover}"
-            : "${localComic.directory}/${localComic.cover}";
-        image = WebDavComicImageProvider(coverRemotePath);
+        var archiveDir = WebDavArchiveService.decodeDirectory(
+          localComic.directory,
+        );
+        if (archiveDir != null) {
+          image = FileImage(File(FilePath.join(archiveDir, localComic.cover)));
+        } else {
+          var coverRemotePath = localComic.hasChapters
+              ? "${localComic.directory}/${localComic.chapters!.ids.first}/${localComic.cover}"
+              : "${localComic.directory}/${localComic.cover}";
+          image = WebDavComicImageProvider(coverRemotePath);
+        }
       }
     }
   } else {

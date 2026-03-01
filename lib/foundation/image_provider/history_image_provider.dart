@@ -32,6 +32,14 @@ class HistoryImageProvider
           if (mobiDir != null) {
             return File(FilePath.join(mobiDir, localComic.cover)).readAsBytes();
           }
+          var archiveStreamDir = WebDavArchiveService.decodeStreamDirectory(
+            localComic.directory,
+          );
+          if (archiveStreamDir != null) {
+            return File(
+              FilePath.join(archiveStreamDir, localComic.cover),
+            ).readAsBytes();
+          }
           var archiveDir = WebDavArchiveService.decodeDirectory(
             localComic.directory,
           );

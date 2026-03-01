@@ -372,7 +372,8 @@ class _GalleryModeState extends State<_GalleryMode>
         ),
         onPageChanged: (i) {
           if (i == 0) {
-            if (reader.isFirstChapterOfGroup || !reader.toPrevChapter(toLastPage: true)) {
+            if (reader.isFirstChapterOfGroup ||
+                !reader.toPrevChapter(toLastPage: true)) {
               controller.jumpToPage(1);
             }
           } else if (i == totalPages + 1) {
@@ -618,6 +619,32 @@ class _GalleryModeState extends State<_GalleryMode>
         }
       }
       return null;
+    } else if (imageKey.startsWith("archive-stream://")) {
+      final parts = imageKey.substring(17).split('/');
+      final cacheDir = '${App.cachePath}/webdav_archive_stream/${parts[0]}';
+      final index = parts[1];
+      for (final ext in [
+        'jpg',
+        'jpeg',
+        'png',
+        'webp',
+        'gif',
+        'bmp',
+        'avif',
+        'heic',
+        'heif',
+        'tif',
+        'tiff',
+      ]) {
+        final f = File('$cacheDir/$index.$ext');
+        if (await f.exists()) {
+          return await f.readAsBytes();
+        }
+      }
+      return await WebDavArchiveService().readStreamingImage(
+        metaKey: parts[0],
+        imageIndex: int.parse(index),
+      );
     } else {
       return (await CacheManager().findCache(
         "$imageKey@${context.reader.type.sourceKey}@${context.reader.cid}@${context.reader.eid}",
@@ -1220,6 +1247,32 @@ class _ContinuousModeState extends State<_ContinuousMode>
         }
       }
       return null;
+    } else if (imageKey.startsWith("archive-stream://")) {
+      final parts = imageKey.substring(17).split('/');
+      final cacheDir = '${App.cachePath}/webdav_archive_stream/${parts[0]}';
+      final index = parts[1];
+      for (final ext in [
+        'jpg',
+        'jpeg',
+        'png',
+        'webp',
+        'gif',
+        'bmp',
+        'avif',
+        'heic',
+        'heif',
+        'tif',
+        'tiff',
+      ]) {
+        final f = File('$cacheDir/$index.$ext');
+        if (await f.exists()) {
+          return await f.readAsBytes();
+        }
+      }
+      return await WebDavArchiveService().readStreamingImage(
+        metaKey: parts[0],
+        imageIndex: int.parse(index),
+      );
     } else {
       return (await CacheManager().findCache(
         "$imageKey@${context.reader.type.sourceKey}@${context.reader.cid}@${context.reader.eid}",
@@ -1250,6 +1303,10 @@ ImageProvider _createImageProviderFromKey(
   if (imageKey.startsWith("mobi-stream://")) {
     final parts = imageKey.substring(14).split('/');
     return WebDavMobiStreamImageProvider(parts[0], int.parse(parts[1]));
+  }
+  if (imageKey.startsWith("archive-stream://")) {
+    final parts = imageKey.substring(17).split('/');
+    return WebDavArchiveStreamImageProvider(parts[0], int.parse(parts[1]));
   }
   var reader = context.reader;
   return ReaderImageProvider(
@@ -1285,6 +1342,18 @@ void _preDownloadImage(int page, BuildContext context) {
   }
   var reader = context.reader;
   var imageKey = reader.images![page - 1];
+  if (imageKey.startsWith("archive-stream://")) {
+    final parts = imageKey.substring(17).split('/');
+    unawaited(
+      WebDavArchiveService().prefetchStreamingAround(
+        metaKey: parts[0],
+        centerIndex: int.parse(parts[1]),
+        before: 1,
+        after: 2,
+      ),
+    );
+    return;
+  }
   if (imageKey.startsWith("file://") ||
       imageKey.startsWith("webdav://") ||
       imageKey.startsWith("mobi-stream://")) {

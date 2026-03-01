@@ -475,6 +475,7 @@ class WebDavComicManager with ChangeNotifier {
       'webdav_mobi_stream',
       'webdav_pdf',
       'webdav_archive',
+      'webdav_archive_stream',
     ]) {
       var cacheDir = Directory('${App.cachePath}/$dirName');
       if (!await cacheDir.exists()) continue;
@@ -495,6 +496,7 @@ class WebDavComicManager with ChangeNotifier {
       'webdav_mobi_stream',
       'webdav_pdf',
       'webdav_archive',
+      'webdav_archive_stream',
     ]) {
       var cacheDir = Directory('${App.cachePath}/$dirName');
       if (await cacheDir.exists()) {

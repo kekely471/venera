@@ -130,10 +130,10 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
     return Stack(
       children: [
         Positioned.fill(child: widget.child),
-        if (appdata.settings['showPageNumberInReader'] == true && !isOnChapterCommentsPage)
+        if (appdata.settings['showPageNumberInReader'] == true &&
+            !isOnChapterCommentsPage)
           buildPageInfoText(),
-        if (!isOnChapterCommentsPage)
-          buildStatusInfo(),
+        if (!isOnChapterCommentsPage) buildStatusInfo(),
         AnimatedPositioned(
           duration: const Duration(milliseconds: 180),
           right: 16,
@@ -162,10 +162,9 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
   }
 
   Widget buildTop() {
-    final epName =
-      context.reader.widget.chapters?.titles.elementAtOrNull(
-        context.reader.chapter - 1,
-      );
+    final epName = context.reader.widget.chapters?.titles.elementAtOrNull(
+      context.reader.chapter - 1,
+    );
 
     return BlurEffect(
       child: Container(
@@ -173,10 +172,7 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
         decoration: BoxDecoration(
           color: context.colorScheme.surface.toOpacity(0.92),
           border: Border(
-            bottom: BorderSide(
-              color: Colors.grey.toOpacity(0.5),
-              width: 0.5,
-            ),
+            bottom: BorderSide(color: Colors.grey.toOpacity(0.5), width: 0.5),
           ),
         ),
         child: Padding(
@@ -190,29 +186,31 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
               const BackButton(),
               const SizedBox(width: 8),
               Expanded(
-                child: epName == null ? Text(
-                  context.reader.widget.name,
-                  style: ts.s18,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ) : Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      context.reader.widget.name,
-                      style: ts.s16,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    Text(
-                      epName,
-                      style: ts.s12,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
+                child: epName == null
+                    ? Text(
+                        context.reader.widget.name,
+                        style: ts.s18,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      )
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            context.reader.widget.name,
+                            style: ts.s16,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          Text(
+                            epName,
+                            style: ts.s12,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
               ),
               const SizedBox(width: 8),
               if (shouldShowChapterComments())
@@ -251,7 +249,9 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
   void addImageFavorite() async {
     try {
       if (context.reader.images![0].contains('file://') ||
-          context.reader.images![0].contains('webdav://')) {
+          context.reader.images![0].contains('webdav://') ||
+          context.reader.images![0].contains('mobi-stream://') ||
+          context.reader.images![0].contains('archive-stream://')) {
         showToast(
           message: "Local comic collection is not supported at present".tl,
           context: context,
@@ -536,10 +536,11 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
                   for (var button in buttons)
                     if (!small)
                       button.paddingHorizontal(4)
-                    else
-                      ...[button, const Spacer()],
-                  if (!small)
-                    const SizedBox(width: 4),
+                    else ...[
+                      button,
+                      const Spacer(),
+                    ],
+                  if (!small) const SizedBox(width: 4),
                 ],
               );
             },
@@ -582,9 +583,7 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
       focusNode: sliderFocus,
       value: displayPage.toDouble(),
       min: 1,
-      max: context.reader.maxPage
-          .clamp(displayPage, 1 << 16)
-          .toDouble(),
+      max: context.reader.maxPage.clamp(displayPage, 1 << 16).toDouble(),
       reversed: isReversed,
       divisions: (context.reader.maxPage - 1).clamp(2, 1 << 16),
       onChanged: (i) {
@@ -712,7 +711,8 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
           if (key == "quickCollectImage") {
             addDragListener();
           }
-          if (key == "showChapterComments" || key == "showChapterCommentsAtEnd") {
+          if (key == "showChapterComments" ||
+              key == "showChapterCommentsAtEnd") {
             update();
           }
           context.reader.update();
@@ -806,10 +806,7 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
               borderRadius: BorderRadius.circular(16),
               child: Center(
                 child: Icon(
-                  _getArrowIcon(
-                    isReversed,
-                    showFloatingButtonValue,
-                  ),
+                  _getArrowIcon(isReversed, showFloatingButtonValue),
                   size: 24,
                   color: Theme.of(context).colorScheme.onPrimaryContainer,
                 ),
@@ -823,9 +820,13 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
 
   IconData _getArrowIcon(bool reversed, int value) {
     if (reversed) {
-      return value == 1 ? Icons.arrow_back_ios_outlined : Icons.arrow_forward_ios;
+      return value == 1
+          ? Icons.arrow_back_ios_outlined
+          : Icons.arrow_forward_ios;
     } else {
-      return value == 1 ? Icons.arrow_forward_ios : Icons.arrow_back_ios_outlined;
+      return value == 1
+          ? Icons.arrow_forward_ios
+          : Icons.arrow_back_ios_outlined;
     }
   }
 
@@ -892,6 +893,54 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
         data = await cacheFile.readAsBytes();
       } else {
         data = await WebDavComicManager().readFile(remotePath);
+      }
+    } else if (imageKey.startsWith("mobi-stream://")) {
+      final parts = imageKey.substring(14).split('/');
+      final cacheDir = '${App.cachePath}/webdav_mobi_stream/${parts[0]}';
+      final index = parts[1];
+      File? found;
+      for (final ext in ['jpg', 'png', 'gif', 'bmp']) {
+        final f = File('$cacheDir/$index.$ext');
+        if (await f.exists()) {
+          found = f;
+          break;
+        }
+      }
+      if (found == null) {
+        throw Exception('Image is not cached yet');
+      }
+      data = await found.readAsBytes();
+    } else if (imageKey.startsWith("archive-stream://")) {
+      final parts = imageKey.substring(17).split('/');
+      final cacheDir = '${App.cachePath}/webdav_archive_stream/${parts[0]}';
+      final index = parts[1];
+      File? found;
+      for (final ext in [
+        'jpg',
+        'jpeg',
+        'png',
+        'webp',
+        'gif',
+        'bmp',
+        'avif',
+        'heic',
+        'heif',
+        'tif',
+        'tiff',
+      ]) {
+        final f = File('$cacheDir/$index.$ext');
+        if (await f.exists()) {
+          found = f;
+          break;
+        }
+      }
+      if (found != null) {
+        data = await found.readAsBytes();
+      } else {
+        data = await WebDavArchiveService().readStreamingImage(
+          metaKey: parts[0],
+          imageIndex: int.parse(index),
+        );
       }
     } else {
       data = await (await CacheManager().findCache(
