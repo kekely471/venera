@@ -170,7 +170,7 @@ class WebDavComicManager with ChangeNotifier {
       try {
         return await operation();
       } catch (e) {
-        if (i == maxRetries - 1) rethrow;
+        if (i == maxRetries - 1 || !_shouldRetry(e)) rethrow;
         // 指数退避
         await Future.delayed(Duration(seconds: i + 1));
         Log.warning(
@@ -180,6 +180,25 @@ class WebDavComicManager with ChangeNotifier {
       }
     }
     throw Exception('Max retries exceeded');
+  }
+
+  bool _shouldRetry(Object error) {
+    if (error is DioException) {
+      final statusCode = error.response?.statusCode;
+      if (statusCode != null &&
+          statusCode >= 400 &&
+          statusCode < 500 &&
+          statusCode != 408 &&
+          statusCode != 429) {
+        return false;
+      }
+    }
+
+    final text = error.toString();
+    if (RegExp(r'Invalid Status Code:?\s*(401|403|404)\b').hasMatch(text)) {
+      return false;
+    }
+    return true;
   }
 
   /// 列举目录内容

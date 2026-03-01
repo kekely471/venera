@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:ui' as ui show Codec;
 import 'dart:ui';
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:venera/foundation/cache_manager.dart';
@@ -28,8 +29,10 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
             screen.size.height * _normalComicImageRatio,
           );
         } else {
-          _effectiveScreenWidth =
-              max(_effectiveScreenWidth ?? 0, screen.size.width);
+          _effectiveScreenWidth = max(
+            _effectiveScreenWidth ?? 0,
+            screen.size.width,
+          );
         }
       }
       if (_effectiveScreenWidth! < _minComicImageWidth) {
@@ -86,10 +89,7 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
         } on _ImageLoadingStopException {
           rethrow;
         } catch (e) {
-          if (e.toString().contains("Invalid Status Code: 404")) {
-            rethrow;
-          }
-          if (e.toString().contains("Invalid Status Code: 403")) {
+          if (_isPermanentHttpError(e)) {
             rethrow;
           }
           if (e.toString().contains("handshake")) {
@@ -124,8 +124,9 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
         if (data.length < 2 * 1024) {
           // data is too short, it's likely that the data is text, not image
           try {
-            var text =
-                const Utf8Codec(allowMalformed: false).decoder.convert(data);
+            var text = const Utf8Codec(
+              allowMalformed: false,
+            ).decoder.convert(data);
             throw Exception("Expected image data, but got text: $text");
           } catch (e) {
             // ignore
@@ -167,6 +168,22 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
   }
 
   bool get enableResize => false;
+}
+
+bool _isPermanentHttpError(Object error) {
+  if (error is DioException) {
+    final statusCode = error.response?.statusCode;
+    if (statusCode != null &&
+        statusCode >= 400 &&
+        statusCode < 500 &&
+        statusCode != 408 &&
+        statusCode != 429) {
+      return true;
+    }
+  }
+
+  final text = error.toString();
+  return RegExp(r'Invalid Status Code:?\s*(401|403|404)\b').hasMatch(text);
 }
 
 typedef FileDecoderCallback = Future<ui.Codec> Function(Uint8List);

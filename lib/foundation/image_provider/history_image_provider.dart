@@ -1,4 +1,7 @@
 import 'dart:async' show Future;
+import 'dart:convert';
+
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:venera/foundation/comic_type.dart';
@@ -14,6 +17,10 @@ import 'history_image_provider.dart' as image_provider;
 
 class HistoryImageProvider
     extends BaseImageProvider<image_provider.HistoryImageProvider> {
+  static final Uint8List _transparentImage = base64Decode(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7+M6kAAAAASUVORK5CYII=',
+  );
+
   /// Image provider for normal image.
   ///
   /// [url] is the url of the image. Local file path is also supported.
@@ -51,7 +58,23 @@ class HistoryImageProvider
           var coverRemotePath = localComic.hasChapters
               ? "${localComic.directory}/${localComic.chapters!.ids.first}/${localComic.cover}"
               : "${localComic.directory}/${localComic.cover}";
-          return WebDavComicManager().readFile(coverRemotePath);
+          try {
+            return await WebDavComicManager().readFile(coverRemotePath);
+          } on DioException catch (e) {
+            final statusCode =
+                e.response?.statusCode ?? _extractStatusCode(e.toString());
+            if (statusCode == 401 || statusCode == 403 || statusCode == 404) {
+              return _transparentImage;
+            }
+            rethrow;
+          } catch (e) {
+            if (RegExp(
+              r'Invalid Status Code:?\s*(401|403|404)\b',
+            ).hasMatch(e.toString())) {
+              return _transparentImage;
+            }
+            rethrow;
+          }
         }
         return localComic.coverFile.readAsBytes();
       }
@@ -89,4 +112,10 @@ class HistoryImageProvider
 
   @override
   String get key => "history${history.id}${history.type.value}";
+
+  static int? _extractStatusCode(String text) {
+    final match = RegExp(r'Invalid Status Code:?\s*(\d{3})').firstMatch(text);
+    if (match == null) return null;
+    return int.tryParse(match.group(1)!);
+  }
 }
