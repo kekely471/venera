@@ -104,7 +104,7 @@ class WebDavMobiStreamImageProvider
 
   Future<File?> _findCachedImage(Directory dir, int index) async {
     if (!await dir.exists()) return null;
-    for (final ext in const ['jpg', 'png', 'gif', 'bmp']) {
+    for (final ext in const ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp']) {
       final f = dir.joinFile('$index.$ext');
       if (await f.exists() && await f.length() > 0) {
         return f;
@@ -129,6 +129,17 @@ class WebDavMobiStreamImageProvider
       return 'gif';
     }
     if (bytes[0] == 0x42 && bytes[1] == 0x4D) return 'bmp';
+    if (bytes.length >= 12 &&
+        bytes[0] == 0x52 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x46 &&
+        bytes[8] == 0x57 &&
+        bytes[9] == 0x45 &&
+        bytes[10] == 0x42 &&
+        bytes[11] == 0x50) {
+      return 'webp';
+    }
     return null;
   }
 }

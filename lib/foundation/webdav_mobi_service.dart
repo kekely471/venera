@@ -188,10 +188,10 @@ class WebDavMobiService {
       return false;
     }
 
-    final hasAnyImage = cacheDir.listSync().whereType<File>().any(
-      (f) => _isImageFile(f.name) && !f.name.toLowerCase().startsWith('cover.'),
-    );
-    return hasAnyImage;
+    // 封面文件存在即可视为缓存可用，无需遍历目录
+    final cover = metadata['cover'] as String?;
+    if (cover == null || cover.isEmpty) return false;
+    return cacheDir.joinFile(cover).existsSync();
   }
 
   WebDavMobiBook _bookFromMetadata(Map<String, dynamic> metadata) {
@@ -533,6 +533,8 @@ class WebDavMobiService {
 
       // 6. 确定图片 record 范围
       var imageStartRecord = mobi.imageIndex;
+      // 记录原始 imageIndex，用于后续封面索引计算
+      final originalImageIndex = mobi.imageIndex;
       if (imageStartRecord <= 0 ||
           imageStartRecord >= pdb.recordCount ||
           imageStartRecord >= pdb.recordOffsets.length) {
@@ -540,12 +542,13 @@ class WebDavMobiService {
         Log.info(tag, 'imageIndex=$imageStartRecord invalid, probing for image records...');
 
         // 利用 coverOffset 作为已知图片 record 参考点
+        // coverOffset 是相对于 imageIndex 的偏移量，无法直接作为绝对 record 号
         int? knownImageRecord;
         if (coverOffset != null &&
-            coverOffset > 0 &&
-            coverOffset < pdb.recordCount &&
-            coverOffset < pdb.recordOffsets.length) {
-          knownImageRecord = coverOffset;
+            originalImageIndex > 0 &&
+            originalImageIndex + coverOffset < pdb.recordCount &&
+            originalImageIndex + coverOffset < pdb.recordOffsets.length) {
+          knownImageRecord = originalImageIndex + coverOffset;
         }
 
         imageStartRecord = await _probeImageStartRecord(
@@ -626,10 +629,18 @@ class WebDavMobiService {
       Log.info(tag, 'Built ${imageRecords.length} imageRecords');
 
       // 7. 确定封面索引
-      final coverIndex =
-          (coverOffset != null && coverOffset < imageRecords.length)
-              ? coverOffset
-              : 0;
+      // coverOffset 是相对于原始 imageIndex 的偏移量
+      // 需要转换为相对于 imageRecords 列表的索引
+      int coverIndex = 0;
+      if (coverOffset != null) {
+        final absoluteCoverRecord = originalImageIndex > 0
+            ? originalImageIndex + coverOffset
+            : imageStartRecord + coverOffset;
+        final relativeIndex = absoluteCoverRecord - imageStartRecord;
+        if (relativeIndex >= 0 && relativeIndex < imageRecords.length) {
+          coverIndex = relativeIndex;
+        }
+      }
 
       // 8. 下载并缓存封面图
       await metaDir.deleteIgnoreError(recursive: true);
@@ -1044,6 +1055,17 @@ class WebDavMobiService {
       return 'gif';
     }
     if (bytes[0] == 0x42 && bytes[1] == 0x4D) return 'bmp';
+    if (bytes.length >= 12 &&
+        bytes[0] == 0x52 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x46 &&
+        bytes[8] == 0x57 &&
+        bytes[9] == 0x45 &&
+        bytes[10] == 0x42 &&
+        bytes[11] == 0x50) {
+      return 'webp';
+    }
     return null;
   }
 

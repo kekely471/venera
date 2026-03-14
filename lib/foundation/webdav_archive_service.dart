@@ -66,6 +66,7 @@ class WebDavArchiveService {
   final Map<String, Future<void>> _streamPrefetchInFlight = {};
   final List<_ArchiveStreamPrefetchTask> _streamPrefetchQueue = [];
   int _streamPrefetchRunning = 0;
+  String? _activeMetaKey;
 
   static bool isArchiveDirectory(String directory) {
     return directory.startsWith(archiveDirectoryPrefix);
@@ -309,11 +310,33 @@ class WebDavArchiveService {
     return null;
   }
 
+  /// 取消指定 metaKey 的所有排队中的预取任务，释放并发槽位。
+  void cancelPrefetch(String metaKey) {
+    _streamPrefetchQueue.removeWhere((task) {
+      if (task.metaKey == metaKey) {
+        if (!task.done.isCompleted) {
+          task.done.complete();
+        }
+        return true;
+      }
+      return false;
+    });
+    _streamPrefetchInFlight.removeWhere(
+      (key, _) => key.startsWith('$metaKey/'),
+    );
+  }
+
   /// 按页读取流式 ZIP 图片。
   Future<Uint8List> readStreamingImage({
     required String metaKey,
     required int imageIndex,
   }) async {
+    // 切换漫画时自动取消旧的预取任务
+    if (_activeMetaKey != null && _activeMetaKey != metaKey) {
+      cancelPrefetch(_activeMetaKey!);
+    }
+    _activeMetaKey = metaKey;
+
     final requestKey = '$metaKey/$imageIndex';
     final inFlight = _streamReadInFlight[requestKey];
     if (inFlight != null) {
@@ -597,12 +620,7 @@ class WebDavArchiveService {
     if (!coverFile.existsSync()) return false;
 
     final pages = metadata['pages'];
-    if (pages is! int || pages <= 0) return false;
-
-    final hasAnyImage = cacheDir.listSync().whereType<File>().any(
-      (f) => _isImageFile(f.name),
-    );
-    return hasAnyImage;
+    return pages is int && pages > 0;
   }
 
   bool _isStreamCacheUsable(
@@ -1056,16 +1074,17 @@ class WebDavArchiveService {
   }
 
   int _readUint32LE(Uint8List data, int offset) {
-    return data[offset] |
-        (data[offset + 1] << 8) |
-        (data[offset + 2] << 16) |
-        (data[offset + 3] << 24);
+    return (data[offset] |
+            (data[offset + 1] << 8) |
+            (data[offset + 2] << 16) |
+            (data[offset + 3] << 24)) &
+        0xFFFFFFFF;
   }
 
   int _readUint64LE(Uint8List data, int offset) {
     final low = _readUint32LE(data, offset);
     final high = _readUint32LE(data, offset + 4);
-    return (high << 32) | low;
+    return (high << 32) | (low & 0xFFFFFFFF);
   }
 
   String _pickImageExtensionFromNameOrBytes(String fileName, Uint8List bytes) {
