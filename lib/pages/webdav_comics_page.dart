@@ -505,6 +505,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
       content: "Clear all WebDAV reading history?".tl,
       onConfirm: () {
         HistoryManager().clearHistoryByType(ComicType.webdav);
+        _loadRecentHistories();
         showToast(message: "Reading history cleared".tl, context: context);
       },
     );
@@ -887,6 +888,16 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
         );
       }
 
+      if (mobiBook == null) {
+        if (mounted) {
+          showToast(
+            message: "Failed to parse MOBI file".tl,
+            context: context,
+          );
+        }
+        return;
+      }
+
       var comic = LocalComic(
         id: mobiBook.id,
         title: mobiBook.title,
@@ -942,6 +953,15 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
             remoteSize: file.size,
             remoteModifiedTime: file.modifiedTime,
           );
+      if (archiveBook == null) {
+        if (mounted) {
+          showToast(
+            message: "Failed to parse archive file".tl,
+            context: context,
+          );
+        }
+        return;
+      }
       var comic = LocalComic(
         id: archiveBook.id,
         title: archiveBook.title,

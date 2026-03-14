@@ -59,6 +59,31 @@ class WebDavEpubService {
   static const int _streamPrefetchBefore = 1;
   static const int _streamPrefetchAfter = 2;
 
+  // 预编译正则表达式
+  static final _containerRootfileRe = RegExp(
+    r'<rootfile[^>]+full-path\s*=\s*"([^"]+)"',
+    caseSensitive: false,
+  );
+  static final _titleRe = RegExp(
+    r'<dc:title[^>]*>([^<]+)</dc:title>',
+    caseSensitive: false,
+  );
+  static final _authorRe = RegExp(
+    r'<dc:creator[^>]*>([^<]+)</dc:creator>',
+    caseSensitive: false,
+  );
+  static final _coverMetaRe = RegExp(
+    r'<meta[^>]+name\s*=\s*"cover"[^>]+content\s*=\s*"([^"]+)"',
+    caseSensitive: false,
+  );
+  static final _itemRe = RegExp(
+    r'<item\s[^>]*/>|<item\s[^>]*>[^<]*</item>',
+    caseSensitive: false,
+  );
+  static final _attrIdRe = RegExp(r'id\s*=\s*"([^"]+)"');
+  static final _attrHrefRe = RegExp(r'href\s*=\s*"([^"]+)"');
+  static final _attrMediaTypeRe = RegExp(r'media-type\s*=\s*"([^"]+)"');
+
   final Map<String, Future<Uint8List>> _streamReadInFlight = {};
   final Map<String, _EpubStreamMeta> _streamMetaCache = {};
   final Map<String, Future<void>> _streamPrefetchInFlight = {};
@@ -109,8 +134,8 @@ class WebDavEpubService {
     )) {
       try {
         return _bookFromStreamMetadata(existingMeta!, fileName);
-      } catch (_) {
-        // 缓存损坏，继续重建
+      } catch (e) {
+        Log.warning('WebDavEpubService', 'Stream meta cache corrupted: $e');
       }
     }
 
@@ -390,8 +415,8 @@ class WebDavEpubService {
     final outFile = streamMeta.metaDir.joinFile('$imageIndex.$ext');
     try {
       await outFile.writeAsBytes(bytes, flush: false);
-    } catch (_) {
-      // 缓存写入失败不影响读取
+    } catch (e) {
+      Log.warning('WebDavEpubService', 'Cache write failed: $e');
     }
     return bytes;
   }
@@ -478,8 +503,8 @@ class WebDavEpubService {
                 }
               }
             }
-          } catch (_) {
-            // 预取失败不影响主流程
+          } catch (e) {
+            Log.warning('WebDavEpubService', 'Prefetch failed: $e');
           } finally {
             final requestKey = '${task.metaKey}/${task.imageIndex}';
             _streamPrefetchInFlight.remove(requestKey);
@@ -499,49 +524,32 @@ class WebDavEpubService {
   /// 从 container.xml 中提取 content.opf 的路径
   String? _parseContainerXml(String xml) {
     // <rootfile full-path="OEBPS/content.opf" .../>
-    final match = RegExp(
-      r'<rootfile[^>]+full-path\s*=\s*"([^"]+)"',
-      caseSensitive: false,
-    ).firstMatch(xml);
+    final match = _containerRootfileRe.firstMatch(xml);
     return match?.group(1);
   }
 
   /// 从 content.opf 中提取图片清单和元数据
   _EpubContentMeta _parseContentOpf(String xml, String opfDir) {
     // 提取 title
-    final titleMatch = RegExp(
-      r'<dc:title[^>]*>([^<]+)</dc:title>',
-      caseSensitive: false,
-    ).firstMatch(xml);
+    final titleMatch = _titleRe.firstMatch(xml);
     final title = titleMatch?.group(1)?.trim();
 
     // 提取 author
-    final authorMatch = RegExp(
-      r'<dc:creator[^>]*>([^<]+)</dc:creator>',
-      caseSensitive: false,
-    ).firstMatch(xml);
+    final authorMatch = _authorRe.firstMatch(xml);
     final author = authorMatch?.group(1)?.trim();
 
     // 提取 cover 图片引用
     // <meta name="cover" content="cover_image"/>
-    final coverMetaMatch = RegExp(
-      r'<meta[^>]+name\s*=\s*"cover"[^>]+content\s*=\s*"([^"]+)"',
-      caseSensitive: false,
-    ).firstMatch(xml);
+    final coverMetaMatch = _coverMetaRe.firstMatch(xml);
     final coverId = coverMetaMatch?.group(1);
 
     // 构建 manifest id → href 映射
     final manifestItems = <String, _ManifestItem>{};
-    final itemPattern = RegExp(
-      r'<item\s[^>]*/>|<item\s[^>]*>[^<]*</item>',
-      caseSensitive: false,
-    );
-    for (final itemMatch in itemPattern.allMatches(xml)) {
+    for (final itemMatch in _itemRe.allMatches(xml)) {
       final itemXml = itemMatch.group(0)!;
-      final idMatch = RegExp(r'id\s*=\s*"([^"]+)"').firstMatch(itemXml);
-      final hrefMatch = RegExp(r'href\s*=\s*"([^"]+)"').firstMatch(itemXml);
-      final mediaMatch =
-          RegExp(r'media-type\s*=\s*"([^"]+)"').firstMatch(itemXml);
+      final idMatch = _attrIdRe.firstMatch(itemXml);
+      final hrefMatch = _attrHrefRe.firstMatch(itemXml);
+      final mediaMatch = _attrMediaTypeRe.firstMatch(itemXml);
       if (idMatch == null || hrefMatch == null) continue;
       manifestItems[idMatch.group(1)!] = _ManifestItem(
         id: idMatch.group(1)!,
@@ -1061,7 +1069,7 @@ class WebDavEpubService {
   int _readUint64LE(Uint8List data, int offset) {
     final low = _readUint32LE(data, offset);
     final high = _readUint32LE(data, offset + 4);
-    return (high << 32) | (low & 0xFFFFFFFF);
+    return (high << 32) | low;
   }
 
   String _pickImageExtensionFromNameOrBytes(String fileName, Uint8List bytes) {

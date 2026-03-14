@@ -66,8 +66,15 @@ class WebDavReadingProgress {
       return 0;
     }
 
-    var json = utf8.decode(bytes);
-    var data = jsonDecode(json) as Map<String, dynamic>;
+    Map<String, dynamic> data;
+    try {
+      var json = utf8.decode(bytes);
+      data = jsonDecode(json) as Map<String, dynamic>;
+    } catch (e) {
+      Log.error('WebDavReadingProgress',
+          'Failed to parse remote progress JSON: $e');
+      return 0;
+    }
     var items = data['items'] as Map<String, dynamic>? ?? {};
 
     var count = 0;

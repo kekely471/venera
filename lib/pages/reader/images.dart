@@ -1344,6 +1344,18 @@ class _ContinuousModeState extends State<_ContinuousMode>
   }
 }
 
+ImageProvider _fallbackProvider(
+    String imageKey, BuildContext context, int page) {
+  var reader = context.reader;
+  return ReaderImageProvider(
+    imageKey,
+    reader.type.comicSource?.key,
+    reader.cid,
+    reader.eid,
+    reader.page,
+  );
+}
+
 ImageProvider _createImageProviderFromKey(
   String imageKey,
   BuildContext context,
@@ -1354,15 +1366,21 @@ ImageProvider _createImageProviderFromKey(
   }
   if (imageKey.startsWith("mobi-stream://")) {
     final parts = imageKey.substring(14).split('/');
-    return WebDavMobiStreamImageProvider(parts[0], int.parse(parts[1]));
+    final index = int.tryParse(parts[1]);
+    if (index == null) return _fallbackProvider(imageKey, context, page);
+    return WebDavMobiStreamImageProvider(parts[0], index);
   }
   if (imageKey.startsWith("archive-stream://")) {
     final parts = imageKey.substring(17).split('/');
-    return WebDavArchiveStreamImageProvider(parts[0], int.parse(parts[1]));
+    final index = int.tryParse(parts[1]);
+    if (index == null) return _fallbackProvider(imageKey, context, page);
+    return WebDavArchiveStreamImageProvider(parts[0], index);
   }
   if (imageKey.startsWith("epub-stream://")) {
     final parts = imageKey.substring(14).split('/');
-    return WebDavEpubStreamImageProvider(parts[0], int.parse(parts[1]));
+    final index = int.tryParse(parts[1]);
+    if (index == null) return _fallbackProvider(imageKey, context, page);
+    return WebDavEpubStreamImageProvider(parts[0], index);
   }
   var reader = context.reader;
   return ReaderImageProvider(
@@ -1400,11 +1418,13 @@ void _preDownloadImage(int page, BuildContext context) {
   var imageKey = reader.images![page - 1];
   if (imageKey.startsWith("archive-stream://")) {
     final parts = imageKey.substring(17).split('/');
+    final index = int.tryParse(parts[1]);
+    if (index == null) return;
     final preloadCount = appdata.settings["preloadImageCount"] as int;
     unawaited(
       WebDavArchiveService().prefetchStreamingAround(
         metaKey: parts[0],
-        centerIndex: int.parse(parts[1]),
+        centerIndex: index,
         before: 1,
         after: preloadCount,
       ),
@@ -1413,11 +1433,13 @@ void _preDownloadImage(int page, BuildContext context) {
   }
   if (imageKey.startsWith("epub-stream://")) {
     final parts = imageKey.substring(14).split('/');
+    final index = int.tryParse(parts[1]);
+    if (index == null) return;
     final preloadCount = appdata.settings["preloadImageCount"] as int;
     unawaited(
       WebDavEpubService().prefetchStreamingAround(
         metaKey: parts[0],
-        centerIndex: int.parse(parts[1]),
+        centerIndex: index,
         before: 1,
         after: preloadCount,
       ),
@@ -1430,7 +1452,9 @@ void _preDownloadImage(int page, BuildContext context) {
   }
   if (imageKey.startsWith("mobi-stream://")) {
     final parts = imageKey.substring(14).split('/');
-    unawaited(WebDavMobiStreamImageProvider.preDownload(parts[0], int.parse(parts[1])));
+    final index = int.tryParse(parts[1]);
+    if (index == null) return;
+    unawaited(WebDavMobiStreamImageProvider.preDownload(parts[0], index));
     return;
   }
   if (imageKey.startsWith("file://")) {

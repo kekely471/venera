@@ -314,7 +314,7 @@ class HistoryManager with ChangeNotifier {
 
   /// 清除指定类型的所有历史记录
   void clearHistoryByType(ComicType type) {
-    _db.execute("delete from history where type == ?;", [type.value]);
+    _db.execute("delete from history where type = ?;", [type.value]);
     updateCache();
     notifyListeners();
   }
@@ -331,7 +331,7 @@ void clearUnfavoritedHistory() {
       if (!LocalFavoritesManager().isExist(id, type)) {
         _db.execute("""
           delete from history
-          where id == ? and type == ?;
+          where id = ? and type = ?;
         """, [id, type.value]);
       }
     }
@@ -347,7 +347,7 @@ void clearUnfavoritedHistory() {
   void remove(String id, ComicType type) async {
     _db.execute("""
       delete from history
-      where id == ? and type == ?;
+      where id = ? and type = ?;
     """, [id, type.value]);
     updateCache();
     notifyListeners();
