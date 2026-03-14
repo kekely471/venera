@@ -73,6 +73,9 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   // 显示模式
   _ViewMode _viewMode = _ViewMode.browse;
 
+  // 书架数据
+  List<LocalComic> _bookshelfComics = [];
+
   @override
   void initState() {
     super.initState();
@@ -446,6 +449,17 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
     }
   }
 
+  void _loadBookshelf() {
+    var all = LocalManager()
+        .getComics(LocalSortType.timeDesc)
+        .where((c) => c.comicType == ComicType.webdav)
+        .toList();
+    setState(() {
+      _bookshelfComics = all;
+      _viewMode = _ViewMode.bookshelf;
+    });
+  }
+
   Future<void> _clearCache() async {
     await _manager.clearCache();
     await _loadCacheSize();
@@ -509,12 +523,13 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
           _buildConfigForm()
         else ...[
           _buildToolbar(),
-          _buildBreadcrumb(),
+          if (_viewMode != _ViewMode.bookshelf) _buildBreadcrumb(),
           if (_error != null) _buildError(),
           if (_isBrowsing || _isScanning) _buildLoading(),
           if (_viewMode == _ViewMode.browse && !_isBrowsing) _buildFileList(),
           if (_viewMode == _ViewMode.scanned && !_isScanning)
             _buildScannedComics(),
+          if (_viewMode == _ViewMode.bookshelf) _buildBookshelf(),
         ],
       ],
     );
@@ -532,7 +547,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   List<Widget> _buildActions() {
     if (!_isConfigured) return [];
     return [
-      if (_viewMode == _ViewMode.scanned)
+      if (_viewMode == _ViewMode.scanned || _viewMode == _ViewMode.bookshelf)
         Tooltip(
           message: "Browse".tl,
           child: IconButton(
@@ -554,6 +569,11 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
       const Spacer(),
       MenuButton(
         entries: [
+          MenuEntry(
+            icon: Icons.collections_bookmark_outlined,
+            text: "Bookshelf".tl,
+            onClick: _loadBookshelf,
+          ),
           MenuEntry(
             icon: Icons.refresh,
             text: "Refresh".tl,
@@ -1745,6 +1765,49 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
     );
   }
 
+  Widget _buildBookshelf() {
+    if (_bookshelfComics.isEmpty) {
+      return SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Center(
+            child: Column(
+              children: [
+                const Icon(Icons.collections_bookmark_outlined, size: 48),
+                const SizedBox(height: 16),
+                Text("No imported comics".tl),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return SliverMainAxisGroup(
+      slivers: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Text(
+              "${_bookshelfComics.length} ${"comics".tl}",
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ),
+        ),
+        SliverPadding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          sliver: SliverGridComics(
+            comics: _bookshelfComics,
+            onTap: (comic, _) {
+              var localComic = comic as LocalComic;
+              localComic.read();
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
   void _showConfigDialog() {
     var config = _manager.config;
     _urlController.text = config?['url'] ?? '';
@@ -1839,7 +1902,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   }
 }
 
-enum _ViewMode { browse, scanned }
+enum _ViewMode { browse, scanned, bookshelf }
 
 class _CoverSearchNode {
   final String path;
