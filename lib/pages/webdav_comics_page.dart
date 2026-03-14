@@ -16,6 +16,7 @@ import 'package:venera/foundation/local.dart';
 import 'package:venera/foundation/log.dart';
 import 'package:venera/foundation/webdav_archive_service.dart';
 import 'package:venera/foundation/webdav_comic_manager.dart';
+import 'package:venera/foundation/webdav_epub_service.dart';
 import 'package:venera/foundation/webdav_mobi_service.dart';
 import 'package:venera/foundation/webdav_reading_progress.dart';
 import 'package:venera/pages/webdav_pdf_reader_page.dart';
@@ -60,8 +61,10 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   final Map<String, Future<String?>> _directoryCoverFutureCache = {};
   final Map<String, Future<String?>> _mobiCoverFutureCache = {};
   final Map<String, Future<String?>> _archiveCoverFutureCache = {};
+  final Map<String, Future<String?>> _epubCoverFutureCache = {};
   final Map<String, Future<String?>> _mobiCoverBuildFutureCache = {};
   final Map<String, Future<String?>> _archiveCoverBuildFutureCache = {};
+  final Map<String, Future<String?>> _epubCoverBuildFutureCache = {};
   final Map<String, Future<void>> _remoteCoverCacheInFlight = {};
   bool _isLargeDirectory = false;
   int _coverResolveInFlight = 0;
@@ -198,6 +201,9 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
       if (_archiveCoverFutureCache.length > 1200) {
         _archiveCoverFutureCache.clear();
       }
+      if (_epubCoverFutureCache.length > 1200) {
+        _epubCoverFutureCache.clear();
+      }
       _prefetchListCovers(path, files, isLargeDirectory);
     } catch (e, s) {
       Log.error('WebDavComicsPage', 'Failed to list directory: $e', s);
@@ -219,7 +225,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
     final session = _coverPrefetchSession;
     final candidates = files
         .where(
-          (f) => f.isDirectory || _isMobiFile(f.name) || _isArchiveFile(f.name),
+          (f) => f.isDirectory || _isMobiFile(f.name) || _isArchiveFile(f.name) || _isEpubFile(f.name),
         )
         .take(
           isLargeDirectory
@@ -267,6 +273,14 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
 
       if (_isArchiveFile(file.name)) {
         final localCoverPath = await _ensureArchiveFileCover(path, file);
+        if (localCoverPath != null && session == _coverPrefetchSession) {
+          _scheduleCoverRefresh();
+        }
+        return;
+      }
+
+      if (_isEpubFile(file.name)) {
+        final localCoverPath = await _ensureEpubFileCover(path, file);
         if (localCoverPath != null && session == _coverPrefetchSession) {
           _scheduleCoverRefresh();
         }
@@ -949,6 +963,45 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
     }
   }
 
+  Future<void> _openEpubFile(String path, WebDavFile file) async {
+    try {
+      showToast(message: "Loading...".tl, context: context);
+      final epubBook = await WebDavEpubService().prepareStreamingMeta(
+        remotePath: path,
+        fileName: file.name,
+        remoteSize: file.size,
+        remoteModifiedTime: file.modifiedTime,
+      );
+      if (epubBook == null) {
+        if (mounted) {
+          showToast(
+            message: "Failed to parse EPUB file".tl,
+            context: context,
+          );
+        }
+        return;
+      }
+      var comic = LocalComic(
+        id: epubBook.id,
+        title: epubBook.title,
+        subtitle: epubBook.subtitle,
+        tags: epubBook.tags,
+        directory: epubBook.directory,
+        chapters: null,
+        cover: epubBook.cover,
+        comicType: ComicType.webdav,
+        downloadedChapters: <String>[],
+        createdAt: epubBook.createdAt,
+      );
+      await _syncComicAndRead(comic);
+    } catch (e, s) {
+      Log.error('WebDavComicsPage', 'Failed to open epub file: $e', s);
+      if (mounted) {
+        showToast(message: "Error: $e", context: context);
+      }
+    }
+  }
+
   Future<void> _syncComicAndRead(
     LocalComic comic, {
     bool showImportedMessage = false,
@@ -1174,6 +1227,34 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
           return _buildCoverPlaceholder(
             Icon(
               Icons.archive,
+              size: 40,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          );
+        },
+      );
+    }
+
+    if (_isEpubFile(file.name)) {
+      return FutureBuilder<String?>(
+        future: _resolveEpubFileCover(path, file),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return _buildCoverPlaceholder(
+              const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            );
+          }
+          var localCoverPath = snapshot.data;
+          if (localCoverPath != null) {
+            return _buildLocalCover(localCoverPath);
+          }
+          return _buildCoverPlaceholder(
+            Icon(
+              Icons.auto_stories,
               size: 40,
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
@@ -1513,6 +1594,102 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
     return files.first.path;
   }
 
+  Future<String?> _resolveEpubFileCover(String remotePath, WebDavFile file) {
+    var key = _buildFileCoverCacheKey(remotePath, file);
+    var cached = _epubCoverFutureCache[key];
+    if (cached != null) return cached;
+
+    var future = Future<String?>(() async {
+      try {
+        return _findCachedEpubCover(remotePath);
+      } catch (e, s) {
+        Log.warning(
+          'WebDavComicsPage',
+          'Failed to resolve epub cover for $remotePath: $e\n$s',
+        );
+        return null;
+      }
+    });
+    _epubCoverFutureCache[key] = future;
+    future.then((value) {
+      if (value == null) {
+        _epubCoverFutureCache.remove(key);
+      }
+    });
+    return future;
+  }
+
+  Future<String?> _ensureEpubFileCover(String remotePath, WebDavFile file) {
+    var key = _buildFileCoverCacheKey(remotePath, file);
+    var cachedBuild = _epubCoverBuildFutureCache[key];
+    if (cachedBuild != null) return cachedBuild;
+
+    var future = Future<String?>(() async {
+      var cached = await _resolveEpubFileCover(remotePath, file);
+      if (cached != null) return cached;
+      var localCoverPath = await _runWithCoverPrefetchSlot(
+        () => _buildEpubFileCover(remotePath, file),
+      );
+      if (localCoverPath != null) {
+        _epubCoverFutureCache[key] = Future.value(localCoverPath);
+      }
+      return localCoverPath;
+    });
+
+    _epubCoverBuildFutureCache[key] = future;
+    future.whenComplete(() {
+      _epubCoverBuildFutureCache.remove(key);
+    });
+    return future;
+  }
+
+  Future<String?> _buildEpubFileCover(
+    String remotePath,
+    WebDavFile file,
+  ) async {
+    try {
+      return await WebDavEpubService().fetchCoverOnly(
+        remotePath: remotePath,
+        fileName: file.name,
+        remoteSize: file.size,
+        remoteModifiedTime: file.modifiedTime,
+      );
+    } catch (e, s) {
+      Log.warning(
+        'WebDavComicsPage',
+        'Failed to build epub cover for $remotePath: $e\n$s',
+      );
+      return null;
+    }
+  }
+
+  String? _findCachedEpubCover(String remotePath) {
+    var key = md5.convert(utf8.encode(remotePath)).toString();
+    var streamCacheDir = Directory(
+      FilePath.join(App.cachePath, 'webdav_epub_stream', key),
+    );
+    if (!streamCacheDir.existsSync()) return null;
+
+    try {
+      var metadataFile = streamCacheDir.joinFile('meta.json');
+      if (metadataFile.existsSync()) {
+        var metadata = jsonDecode(metadataFile.readAsStringSync());
+        if (metadata is Map && metadata['cover'] is String) {
+          var cover = (metadata['cover'] as String).trim();
+          if (cover.isNotEmpty) {
+            var coverFile = streamCacheDir.joinFile(cover);
+            if (coverFile.existsSync()) {
+              return coverFile.path;
+            }
+          }
+        }
+      }
+    } catch (_) {
+      // ignore broken metadata
+    }
+    return null;
+  }
+
   String _buildFileCoverCacheKey(String remotePath, WebDavFile file) {
     return '$remotePath|${file.size ?? -1}|${file.modifiedTime?.millisecondsSinceEpoch ?? -1}';
   }
@@ -1655,6 +1832,11 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
 
     if (_isArchiveFile(file.name)) {
       _openArchiveFile(path, file);
+      return;
+    }
+
+    if (_isEpubFile(file.name)) {
+      _openEpubFile(path, file);
     }
   }
 
@@ -1690,6 +1872,10 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   bool _isArchiveFile(String filename) {
     const archiveExtensions = ['zip', 'cbz', '7z', 'cb7', 'rar', 'cbr'];
     return archiveExtensions.contains(filename.split('.').last.toLowerCase());
+  }
+
+  bool _isEpubFile(String filename) {
+    return filename.split('.').last.toLowerCase() == 'epub';
   }
 
   Widget _buildScannedComics() {

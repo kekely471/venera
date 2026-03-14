@@ -645,6 +645,32 @@ class _GalleryModeState extends State<_GalleryMode>
         metaKey: parts[0],
         imageIndex: int.parse(index),
       );
+    } else if (imageKey.startsWith("epub-stream://")) {
+      final parts = imageKey.substring(14).split('/');
+      final cacheDir = '${App.cachePath}/webdav_epub_stream/${parts[0]}';
+      final index = parts[1];
+      for (final ext in [
+        'jpg',
+        'jpeg',
+        'png',
+        'webp',
+        'gif',
+        'bmp',
+        'avif',
+        'heic',
+        'heif',
+        'tif',
+        'tiff',
+      ]) {
+        final f = File('$cacheDir/$index.$ext');
+        if (await f.exists()) {
+          return await f.readAsBytes();
+        }
+      }
+      return await WebDavEpubService().readStreamingImage(
+        metaKey: parts[0],
+        imageIndex: int.parse(index),
+      );
     } else {
       return (await CacheManager().findCache(
         "$imageKey@${context.reader.type.sourceKey}@${context.reader.cid}@${context.reader.eid}",
@@ -1273,6 +1299,32 @@ class _ContinuousModeState extends State<_ContinuousMode>
         metaKey: parts[0],
         imageIndex: int.parse(index),
       );
+    } else if (imageKey.startsWith("epub-stream://")) {
+      final parts = imageKey.substring(14).split('/');
+      final cacheDir = '${App.cachePath}/webdav_epub_stream/${parts[0]}';
+      final index = parts[1];
+      for (final ext in [
+        'jpg',
+        'jpeg',
+        'png',
+        'webp',
+        'gif',
+        'bmp',
+        'avif',
+        'heic',
+        'heif',
+        'tif',
+        'tiff',
+      ]) {
+        final f = File('$cacheDir/$index.$ext');
+        if (await f.exists()) {
+          return await f.readAsBytes();
+        }
+      }
+      return await WebDavEpubService().readStreamingImage(
+        metaKey: parts[0],
+        imageIndex: int.parse(index),
+      );
     } else {
       return (await CacheManager().findCache(
         "$imageKey@${context.reader.type.sourceKey}@${context.reader.cid}@${context.reader.eid}",
@@ -1307,6 +1359,10 @@ ImageProvider _createImageProviderFromKey(
   if (imageKey.startsWith("archive-stream://")) {
     final parts = imageKey.substring(17).split('/');
     return WebDavArchiveStreamImageProvider(parts[0], int.parse(parts[1]));
+  }
+  if (imageKey.startsWith("epub-stream://")) {
+    final parts = imageKey.substring(14).split('/');
+    return WebDavEpubStreamImageProvider(parts[0], int.parse(parts[1]));
   }
   var reader = context.reader;
   return ReaderImageProvider(
@@ -1347,6 +1403,19 @@ void _preDownloadImage(int page, BuildContext context) {
     final preloadCount = appdata.settings["preloadImageCount"] as int;
     unawaited(
       WebDavArchiveService().prefetchStreamingAround(
+        metaKey: parts[0],
+        centerIndex: int.parse(parts[1]),
+        before: 1,
+        after: preloadCount,
+      ),
+    );
+    return;
+  }
+  if (imageKey.startsWith("epub-stream://")) {
+    final parts = imageKey.substring(14).split('/');
+    final preloadCount = appdata.settings["preloadImageCount"] as int;
+    unawaited(
+      WebDavEpubService().prefetchStreamingAround(
         metaKey: parts[0],
         centerIndex: int.parse(parts[1]),
         before: 1,

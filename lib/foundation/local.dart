@@ -11,6 +11,7 @@ import 'package:venera/foundation/favorites.dart';
 import 'package:venera/foundation/log.dart';
 import 'package:venera/foundation/webdav_archive_service.dart';
 import 'package:venera/foundation/webdav_comic_manager.dart';
+import 'package:venera/foundation/webdav_epub_service.dart';
 import 'package:venera/foundation/webdav_mobi_service.dart';
 import 'package:venera/network/download.dart';
 import 'package:venera/pages/reader/reader.dart';
@@ -522,6 +523,11 @@ class LocalManager with ChangeNotifier {
       return await _getWebDavArchiveImages(comic);
     }
 
+    if (type == ComicType.webdav &&
+        WebDavEpubService.isStreamDirectory(comic.directory)) {
+      return await _getWebDavEpubStreamImages(comic);
+    }
+
     if (type == ComicType.webdav) {
       return await _getWebDavImages(comic, ep);
     }
@@ -625,6 +631,26 @@ class LocalManager with ChangeNotifier {
     }
     var metaKey = dirPath.split('/').last;
     return List.generate(imageCount, (i) => 'archive-stream://$metaKey/$i');
+  }
+
+  Future<List<String>> _getWebDavEpubStreamImages(LocalComic comic) async {
+    var dirPath = WebDavEpubService.decodeStreamDirectory(comic.directory);
+    if (dirPath == null) {
+      throw "Invalid epub stream path";
+    }
+    var metaFile = File(FilePath.join(dirPath, 'meta.json'));
+    if (!await metaFile.exists()) {
+      throw "Epub stream meta not found";
+    }
+    var meta =
+        jsonDecode(await metaFile.readAsString()) as Map<String, dynamic>;
+    var imageCount = meta['imageCount'] as int?;
+    imageCount ??= meta['pages'] as int?;
+    if (imageCount == null || imageCount <= 0) {
+      throw "Epub stream image count is invalid";
+    }
+    var metaKey = dirPath.split('/').last;
+    return List.generate(imageCount, (i) => 'epub-stream://$metaKey/$i');
   }
 
   Future<List<String>> _getWebDavArchiveImages(LocalComic comic) async {
