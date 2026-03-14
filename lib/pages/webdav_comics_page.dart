@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:venera/components/components.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/comic_type.dart';
+import 'package:venera/foundation/history.dart';
 import 'package:venera/foundation/image_provider/webdav_comic_image.dart';
 import 'package:venera/foundation/local.dart';
 import 'package:venera/foundation/log.dart';
@@ -453,6 +454,18 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
     }
   }
 
+  void _clearReadingHistory() {
+    showConfirmDialog(
+      context: context,
+      title: "Clear Reading History".tl,
+      content: "Clear all WebDAV reading history?".tl,
+      onConfirm: () {
+        HistoryManager().clearHistoryByType(ComicType.webdav);
+        showToast(message: "Reading history cleared".tl, context: context);
+      },
+    );
+  }
+
   Future<void> _disconnectWebDav() async {
     await _manager.clearConfig();
     setState(() {
@@ -561,6 +574,11 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
             text:
                 "${"Clear Cache".tl}${_cacheSize != null ? ' ($_cacheSize)' : ''}",
             onClick: _clearCache,
+          ),
+          MenuEntry(
+            icon: Icons.history_outlined,
+            text: "Clear Reading History".tl,
+            onClick: _clearReadingHistory,
           ),
           MenuEntry(
             icon: Icons.settings,

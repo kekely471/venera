@@ -312,6 +312,13 @@ class HistoryManager with ChangeNotifier {
     notifyListeners();
   }
 
+  /// 清除指定类型的所有历史记录
+  void clearHistoryByType(ComicType type) {
+    _db.execute("delete from history where type == ?;", [type.value]);
+    updateCache();
+    notifyListeners();
+  }
+
 void clearUnfavoritedHistory() {
   _db.execute('BEGIN TRANSACTION;');
   try {
