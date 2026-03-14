@@ -142,4 +142,58 @@ class WebDavMobiStreamImageProvider
     }
     return null;
   }
+
+  /// 预下载图片到缓存（不解码），供阅读器预加载使用
+  static Future<void> preDownload(String metaKey, int imageIndex) async {
+    final cacheDir = Directory(
+      FilePath.join(App.cachePath, 'webdav_mobi_stream', metaKey),
+    );
+
+    // 检查缓存是否已存在
+    for (final ext in const ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp']) {
+      final f = cacheDir.joinFile('$imageIndex.$ext');
+      if (await f.exists() && await f.length() > 0) return;
+    }
+
+    try {
+      final metaFile = cacheDir.joinFile('meta.json');
+      if (!await metaFile.exists()) return;
+      final meta =
+          jsonDecode(await metaFile.readAsString()) as Map<String, dynamic>;
+      final remotePath = meta['remotePath'] as String;
+      final imageRecords = meta['imageRecords'] as List;
+      if (imageIndex < 0 || imageIndex >= imageRecords.length) return;
+
+      final record = imageRecords[imageIndex] as Map<String, dynamic>;
+      final start = record['start'] as int;
+      final end = record['end'] as int;
+
+      final manager = WebDavComicManager();
+      final result = await manager.readFileRange(remotePath, start: start, end: end);
+      if (result.bytes.isEmpty) return;
+
+      final ext = _detectImageMagicStatic(result.bytes);
+      if (ext == null) return;
+
+      await cacheDir.create(recursive: true);
+      await cacheDir.joinFile('$imageIndex.$ext').writeAsBytes(result.bytes);
+      Log.info('MobiStreamImageProvider', 'Pre-downloaded: $metaKey/$imageIndex');
+    } catch (e) {
+      Log.warning('MobiStreamImageProvider', 'Pre-download failed: $metaKey/$imageIndex $e');
+    }
+  }
+
+  static String? _detectImageMagicStatic(Uint8List bytes) {
+    if (bytes.length < 4) return null;
+    if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) return 'jpg';
+    if (bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47) return 'png';
+    if (bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x38) return 'gif';
+    if (bytes[0] == 0x42 && bytes[1] == 0x4D) return 'bmp';
+    if (bytes.length >= 12 &&
+        bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46 &&
+        bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50) {
+      return 'webp';
+    }
+    return null;
+  }
 }

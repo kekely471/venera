@@ -129,4 +129,22 @@ class WebDavComicImageProvider
     if (match == null) return null;
     return int.tryParse(match.group(1)!);
   }
+
+  /// 预下载图片到缓存（不解码），供阅读器预加载使用
+  static Future<void> preDownload(String remotePath) async {
+    var cacheFile = File(
+      '${App.cachePath}/webdav_comics/${remotePath.startsWith('/') ? remotePath.substring(1) : remotePath}',
+    );
+    if (await cacheFile.exists()) return;
+
+    try {
+      var manager = WebDavComicManager();
+      var bytes = await manager.readFile(remotePath);
+      await cacheFile.parent.create(recursive: true);
+      await cacheFile.writeAsBytes(bytes);
+      Log.info('WebDavComicImageProvider', 'Pre-downloaded: $remotePath');
+    } catch (e) {
+      Log.warning('WebDavComicImageProvider', 'Pre-download failed: $remotePath $e');
+    }
+  }
 }

@@ -1344,19 +1344,27 @@ void _preDownloadImage(int page, BuildContext context) {
   var imageKey = reader.images![page - 1];
   if (imageKey.startsWith("archive-stream://")) {
     final parts = imageKey.substring(17).split('/');
+    final preloadCount = appdata.settings["preloadImageCount"] as int;
     unawaited(
       WebDavArchiveService().prefetchStreamingAround(
         metaKey: parts[0],
         centerIndex: int.parse(parts[1]),
         before: 1,
-        after: 2,
+        after: preloadCount,
       ),
     );
     return;
   }
-  if (imageKey.startsWith("file://") ||
-      imageKey.startsWith("webdav://") ||
-      imageKey.startsWith("mobi-stream://")) {
+  if (imageKey.startsWith("webdav://")) {
+    unawaited(WebDavComicImageProvider.preDownload(imageKey.substring(9)));
+    return;
+  }
+  if (imageKey.startsWith("mobi-stream://")) {
+    final parts = imageKey.substring(14).split('/');
+    unawaited(WebDavMobiStreamImageProvider.preDownload(parts[0], int.parse(parts[1])));
+    return;
+  }
+  if (imageKey.startsWith("file://")) {
     return;
   }
   var cid = reader.cid;
