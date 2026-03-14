@@ -15,6 +15,7 @@ import 'package:venera/foundation/log.dart';
 import 'package:venera/foundation/webdav_archive_service.dart';
 import 'package:venera/foundation/webdav_comic_manager.dart';
 import 'package:venera/foundation/webdav_mobi_service.dart';
+import 'package:venera/foundation/webdav_reading_progress.dart';
 import 'package:venera/pages/webdav_pdf_reader_page.dart';
 
 import 'package:venera/utils/translations.dart';
@@ -411,6 +412,39 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
     }
   }
 
+  Future<void> _pullReadingProgress() async {
+    showToast(message: "Pulling progress...".tl, context: context);
+    try {
+      var service = WebDavReadingProgress();
+      var count = await service.pullProgress();
+      if (mounted) {
+        showToast(
+          message: "Pulled @count records".tlParams({'count': count}),
+          context: context,
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        showToast(message: "Error: $e", context: context);
+      }
+    }
+  }
+
+  Future<void> _pushReadingProgress() async {
+    showToast(message: "Pushing progress...".tl, context: context);
+    try {
+      var service = WebDavReadingProgress();
+      await service.pushProgress();
+      if (mounted) {
+        showToast(message: "Progress pushed".tl, context: context);
+      }
+    } catch (e) {
+      if (mounted) {
+        showToast(message: "Error: $e", context: context);
+      }
+    }
+  }
+
   Future<void> _clearCache() async {
     await _manager.clearCache();
     await _loadCacheSize();
@@ -511,6 +545,16 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
             icon: Icons.refresh,
             text: "Refresh".tl,
             onClick: () => _loadDirectory(_currentPath),
+          ),
+          MenuEntry(
+            icon: Icons.cloud_download_outlined,
+            text: "Pull Progress".tl,
+            onClick: _pullReadingProgress,
+          ),
+          MenuEntry(
+            icon: Icons.cloud_upload_outlined,
+            text: "Push Progress".tl,
+            onClick: _pushReadingProgress,
           ),
           MenuEntry(
             icon: Icons.cleaning_services_outlined,

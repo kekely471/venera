@@ -353,6 +353,20 @@ class WebDavComicManager with ChangeNotifier {
     });
   }
 
+  /// 将数据写入 WebDAV 文件
+  ///
+  /// [path] 相对于 basePath 的路径
+  /// [data] 要写入的字节数据
+  Future<void> writeFile(String path, Uint8List data) async {
+    return _withRetry(() async {
+      var client = _getClient();
+      var cfg = config!;
+      var fullPath = _normalizePath('${cfg['basePath']}$path');
+      Log.info('WebDavComicManager', 'Writing file: $fullPath');
+      await client.write(fullPath, data);
+    });
+  }
+
   /// 扫描漫画目录（递归）
   ///
   /// [path] 相对于 basePath 的路径，默认为根目录 "/"
