@@ -10,6 +10,7 @@ import 'package:venera/components/components.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/history.dart';
+import 'package:venera/foundation/image_provider/history_image_provider.dart';
 import 'package:venera/foundation/image_provider/webdav_comic_image.dart';
 import 'package:venera/foundation/local.dart';
 import 'package:venera/foundation/log.dart';
@@ -76,9 +77,13 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   // 书架数据
   List<LocalComic> _bookshelfComics = [];
 
+  // 最近阅读
+  List<History> _recentHistories = [];
+
   @override
   void initState() {
     super.initState();
+    _loadRecentHistories();
     var config = _manager.config;
     _urlController = TextEditingController(text: config?['url'] ?? '');
     _usernameController = TextEditingController(
@@ -449,6 +454,17 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
     }
   }
 
+  void _loadRecentHistories() {
+    var all = HistoryManager()
+        .getRecent()
+        .where((h) => h.type == ComicType.webdav)
+        .take(10)
+        .toList();
+    setState(() {
+      _recentHistories = all;
+    });
+  }
+
   void _loadBookshelf() {
     var all = LocalManager()
         .getComics(LocalSortType.timeDesc)
@@ -523,6 +539,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
           _buildConfigForm()
         else ...[
           _buildToolbar(),
+          if (_viewMode == _ViewMode.browse) _buildRecentReading(),
           if (_viewMode != _ViewMode.bookshelf) _buildBreadcrumb(),
           if (_error != null) _buildError(),
           if (_isBrowsing || _isScanning) _buildLoading(),
@@ -1762,6 +1779,89 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
           }, childCount: _scannedComics.length),
         ),
       ],
+    );
+  }
+
+  Widget _buildRecentReading() {
+    if (_recentHistories.isEmpty) return const SliverToBoxAdapter();
+
+    return SliverToBoxAdapter(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+            child: Text(
+              "Recent Reading".tl,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ),
+          SizedBox(
+            height: 160,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              itemCount: _recentHistories.length,
+              itemBuilder: (context, index) {
+                var history = _recentHistories[index];
+                return _buildRecentItem(history);
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRecentItem(History history) {
+    var localComic = LocalManager().find(history.id, ComicType.webdav);
+    return GestureDetector(
+      onTap: () {
+        if (localComic != null) {
+          localComic.read();
+        }
+      },
+      child: Container(
+        width: 100,
+        margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+        child: Column(
+          children: [
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .surfaceContainerHighest,
+                  child: Image(
+                    image: HistoryImageProvider(history),
+                    fit: BoxFit.cover,
+                    width: double.infinity,
+                    height: double.infinity,
+                    errorBuilder: (_, __, ___) =>
+                        const Center(child: Icon(Icons.menu_book, size: 32)),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              history.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            Text(
+              history.description,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
