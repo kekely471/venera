@@ -898,6 +898,104 @@ class LocalManager with ChangeNotifier {
     downloadingTasks.first.resume();
   }
 
+  /// 返回失效的漫画（支持 local 和 webdav 类型）
+  ///
+  /// 检测以下情况：
+  /// - 本地缓存目录不存在
+  /// - 目录存在但无图片文件（本地漫画）
+  /// - 有章节的漫画，所有已下载章节目录均缺失或为空（本地漫画）
+  /// - 流式漫画的 meta.json 丢失（WebDAV 流式）
+  List<LocalComic> findInvalidComics() {
+    final comics = getComics(LocalSortType.name);
+    return comics.where((c) {
+      if (c.comicType == ComicType.local) {
+        return _isLocalComicInvalid(c);
+      } else if (c.comicType == ComicType.webdav) {
+        return _isWebDavComicInvalid(c);
+      }
+      return false;
+    }).toList();
+  }
+
+  bool _isLocalComicInvalid(LocalComic c) {
+    var dir = Directory(c.baseDir);
+    if (!dir.existsSync()) return true;
+    if (c.hasChapters) {
+      if (c.downloadedChapters.isEmpty) return false;
+      for (var chapterId in c.downloadedChapters) {
+        var chapterDir = Directory(FilePath.join(
+          dir.path,
+          getChapterDirectoryName(chapterId),
+        ));
+        if (chapterDir.existsSync() && _directoryHasImages(chapterDir)) {
+          return false;
+        }
+      }
+      return true;
+    } else {
+      return !_directoryHasImages(dir);
+    }
+  }
+
+  bool _isWebDavComicInvalid(LocalComic c) {
+    var dir = c.directory;
+    // 流式类型：检查缓存目录和 meta.json
+    var streamDir = WebDavMobiService.decodeStreamDirectory(dir) ??
+        WebDavArchiveService.decodeStreamDirectory(dir) ??
+        WebDavEpubService.decodeStreamDirectory(dir);
+    if (streamDir != null) {
+      var d = Directory(streamDir);
+      if (!d.existsSync()) return true;
+      return !File(FilePath.join(streamDir, 'meta.json')).existsSync();
+    }
+    // 完整下载类型：检查缓存目录是否存在且有图片
+    var cacheDir = WebDavMobiService.decodeDirectory(dir) ??
+        WebDavArchiveService.decodeDirectory(dir);
+    if (cacheDir != null) {
+      var d = Directory(cacheDir);
+      if (!d.existsSync()) return true;
+      return !_directoryHasImages(d);
+    }
+    // 裸路径（远程目录浏览类型）：无法离线验证，跳过
+    return false;
+  }
+
+  /// 清理所有 WebDAV 漫画的缓存和数据库记录
+  ///
+  /// 返回被清理的漫画数量
+  int clearWebDavCache() {
+    final comics = getComics(LocalSortType.name)
+        .where((c) => c.comicType == ComicType.webdav)
+        .toList();
+    if (comics.isEmpty) return 0;
+    batchDeleteComics(comics, true, true);
+    // 额外清理缓存目录（可能存在无记录的残留缓存）
+    var webdavMobiDir = Directory(FilePath.join(App.cachePath, 'webdav_mobi'));
+    var webdavComicsDir = Directory(
+      FilePath.join(App.cachePath, 'webdav_comics'),
+    );
+    webdavMobiDir.deleteIgnoreError(recursive: true);
+    webdavComicsDir.deleteIgnoreError(recursive: true);
+    return comics.length;
+  }
+
+  /// 检查目录中是否存在图片文件（非递归，仅一级）
+  bool _directoryHasImages(Directory dir) {
+    try {
+      for (var entity in dir.listSync()) {
+        if (entity is File &&
+            !entity.name.startsWith('cover.') &&
+            !entity.name.startsWith('.') &&
+            _isImageFile(entity.name)) {
+          return true;
+        }
+      }
+    } catch (_) {
+      return false;
+    }
+    return false;
+  }
+
   void deleteComic(LocalComic c, [bool removeFileOnDisk = true]) {
     if (removeFileOnDisk && c.comicType != ComicType.webdav) {
       var dir = Directory(FilePath.join(path, c.directory));

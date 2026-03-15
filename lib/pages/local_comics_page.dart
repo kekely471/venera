@@ -63,6 +63,112 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
     super.dispose();
   }
 
+  void cleanInvalidComics() async {
+    var invalid = LocalManager().findInvalidComics();
+    if (invalid.isEmpty) {
+      context.showMessage(message: "No invalid comics found".tl);
+      return;
+    }
+    bool confirmed = false;
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return ContentDialog(
+          title: "Clean Up".tl,
+          content: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                "@count comics with missing files found."
+                    .tlParams({"count": invalid.length.toString()}),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 200,
+                child: ListView.builder(
+                  itemCount: invalid.length,
+                  itemBuilder: (context, index) {
+                    return ListTile(
+                      dense: true,
+                      title: Text(
+                        invalid[index].title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        invalid[index].directory,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () {
+                confirmed = true;
+                context.pop();
+              },
+              child: Text("Remove All".tl),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed) {
+      LocalManager().batchDeleteComics(invalid, false, true);
+      context.showMessage(
+        message: "@count invalid comics removed."
+            .tlParams({"count": invalid.length.toString()}),
+      );
+    }
+  }
+
+  void clearWebDavCache() async {
+    var webdavCount = LocalManager()
+        .getComics(LocalSortType.name)
+        .where((c) => c.comicType == ComicType.webdav)
+        .length;
+    if (webdavCount == 0) {
+      context.showMessage(message: "No WebDAV cache found".tl);
+      return;
+    }
+    bool confirmed = false;
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return ContentDialog(
+          title: "Clear WebDAV Cache".tl,
+          content: Text(
+            "This will remove all @count WebDAV comics and their cache files."
+                .tlParams({"count": webdavCount.toString()}),
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () {
+                confirmed = true;
+                context.pop();
+              },
+              child: Text("Confirm".tl),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed) {
+      var count = LocalManager().clearWebDavCache();
+      context.showMessage(
+        message: "@count WebDAV comics cleared."
+            .tlParams({"count": count.toString()}),
+      );
+    }
+  }
+
   void sort() {
     showDialog(
       context: context,
@@ -216,6 +322,18 @@ class _LocalComicsPageState extends State<LocalComicsPage> {
           onPressed: sort,
         ),
       ),
+      MenuButton(entries: [
+        MenuEntry(
+          icon: Icons.cleaning_services_outlined,
+          text: "Clean Invalid Comics".tl,
+          onClick: cleanInvalidComics,
+        ),
+        MenuEntry(
+          icon: Icons.cloud_off_outlined,
+          text: "Clear WebDAV Cache".tl,
+          onClick: clearWebDavCache,
+        ),
+      ]),
       Tooltip(
         message: "Downloading".tl,
         child: IconButton(

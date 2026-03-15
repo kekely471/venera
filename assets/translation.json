@@ -434,7 +434,17 @@
     "Clear specific reader settings for this comic": "清除该漫画的特殊阅读设置",
     "Enable comic specific settings": "启用此漫画特定设置",
     "Ignore Certificate Errors": "忽略证书错误",
-    "Mouse scroll speed": "鼠标滚动速度"
+    "Mouse scroll speed": "鼠标滚动速度",
+    "Clean Up": "清理",
+    "Clean Invalid Comics": "清理失效漫画",
+    "Clear WebDAV Cache": "清理 WebDAV 缓存",
+    "No WebDAV cache found": "未发现 WebDAV 缓存",
+    "This will remove all @count WebDAV comics and their cache files.": "将移除全部 @count 本 WebDAV 漫画及其缓存文件。",
+    "@count WebDAV comics cleared.": "已清理 @count 本 WebDAV 漫画",
+    "No invalid comics found": "未发现失效漫画",
+    "@count comics with missing files found.": "发现 @count 本文件缺失的漫画",
+    "@count invalid comics removed.": "已移除 @count 本失效漫画",
+    "Remove All": "全部移除"
   },
   "zh_TW": {
     "Home": "首頁",
@@ -871,6 +881,16 @@
     "Clear specific reader settings for this comic": "清除該漫畫的特殊閱讀設定",
     "Enable comic specific settings": "啟用此漫畫特定設定",
     "Ignore Certificate Errors": "忽略證書錯誤",
-    "Mouse scroll speed": "滑鼠滾動速度"
+    "Mouse scroll speed": "滑鼠滾動速度",
+    "Clean Up": "清理",
+    "Clean Invalid Comics": "清理失效漫畫",
+    "Clear WebDAV Cache": "清理 WebDAV 快取",
+    "No WebDAV cache found": "未發現 WebDAV 快取",
+    "This will remove all @count WebDAV comics and their cache files.": "將移除全部 @count 本 WebDAV 漫畫及其快取檔案。",
+    "@count WebDAV comics cleared.": "已清理 @count 本 WebDAV 漫畫",
+    "No invalid comics found": "未發現失效漫畫",
+    "@count comics with missing files found.": "發現 @count 本檔案缺失的漫畫",
+    "@count invalid comics removed.": "已移除 @count 本失效漫畫",
+    "Remove All": "全部移除"
   }
 }
