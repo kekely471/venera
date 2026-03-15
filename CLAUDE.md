@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-Venera — 跨平台漫画阅读器（Flutter 3.38.5 / Dart >=3.8.0 <4.0.0），支持 Android、iOS、Windows、Linux、macOS、Web。通过 JavaScript 脚本动态加载漫画源，支持本地漫画与 WebDAV 远程同步。
+Venera — 跨平台漫画阅读器（Flutter 3.38.5 / Dart >=3.8.0 <4.0.0，版本 1.6.2+162），支持 Android、iOS、Windows、Linux、macOS、Web。通过 JavaScript 脚本动态加载漫画源，支持本地漫画与 WebDAV 远程同步。
 
 ## 常用命令
 
@@ -77,9 +77,21 @@ flutter run -- --headless webdav down  # WebDAV 下载同步
 - **灵活的源系统**：JS 脚本动态加载，无需重编译即可扩展漫画源
 - **多语言**：zh-CN、zh-TW、en-US，OpenCC 繁简转换
 
+### 本地漫画管理 (`foundation/local.dart`)
+
+`LocalComic` 实现 `Comic` 接口，`LocalManager` 单例管理本地漫画的增删查改。漫画类型通过 `ComicType` 区分（本地导入 vs WebDAV 缓存 vs 下载）。`baseDir` 属性智能解析实际存储路径（WebDAV MOBI/Archive 使用缓存目录，其他使用漫画自身目录）。
+
+### 翻译系统
+
+单一 JSON 文件 `assets/translation.json`，按语言分层。通过 `String` 扩展方法使用：`.tl`（当前语言）、`.tlEN`（英文）、`.tlParams()`（参数替换）、`.ts(sourceKey)`（源专用翻译）。
+
 ## Lint 配置
 
 基于 `flutter_lints`，已禁用：`use_build_context_synchronously`、`avoid_print`、`collection_methods_unrelated_type`。
+
+## 关键 Git 依赖
+
+以下依赖使用自定义 Git 分支，`pub get` 时从 GitHub 拉取：flutter_qjs、photo_view、scrollable_positioned_list、desktop_webview_window、flutter_inappwebview、lodepng_flutter、rhttp、webdav_client、flutter_saf、flutter_7zip、rar。
 
 ## 文档
 

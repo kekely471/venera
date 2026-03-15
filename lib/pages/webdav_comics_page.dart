@@ -77,6 +77,10 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   // 显示模式
   _ViewMode _viewMode = _ViewMode.browse;
 
+  // 搜索
+  bool _searchMode = false;
+  String _searchKeyword = '';
+
   // 书架数据
   List<LocalComic> _bookshelfComics = [];
 
@@ -190,6 +194,8 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
           _isBrowsing = false;
           _viewMode = _ViewMode.browse;
           _isLargeDirectory = isLargeDirectory;
+          _searchMode = false;
+          _searchKeyword = '';
         });
       }
       if (_directoryCoverFutureCache.length > 1200) {
@@ -538,6 +544,30 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
     return LocalManager().find(comic.id, ComicType.webdav) != null;
   }
 
+  // 搜索过滤
+  List<WebDavFile> get _filteredFiles {
+    if (_searchKeyword.isEmpty) return _currentFiles;
+    var kw = _searchKeyword.toLowerCase();
+    return _currentFiles
+        .where((f) => f.name.toLowerCase().contains(kw))
+        .toList();
+  }
+
+  List<LocalComic> get _filteredBookshelfComics {
+    if (_searchKeyword.isEmpty) return _bookshelfComics;
+    var kw = _searchKeyword.toLowerCase();
+    return _bookshelfComics
+        .where((c) => c.title.toLowerCase().contains(kw))
+        .toList();
+  }
+
+  void _exitSearch() {
+    setState(() {
+      _searchMode = false;
+      _searchKeyword = '';
+    });
+  }
+
   // 面包屑路径
   List<String> get _breadcrumbs {
     if (_currentPath == '/') return ['/'];
@@ -568,6 +598,35 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   }
 
   Widget _buildToolbar() {
+    if (_searchMode) {
+      return SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Row(
+            children: [
+              IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: _exitSearch,
+              ),
+              Expanded(
+                child: TextField(
+                  autofocus: true,
+                  decoration: InputDecoration(
+                    hintText: "Search".tl,
+                    border: InputBorder.none,
+                  ),
+                  onChanged: (v) {
+                    setState(() {
+                      _searchKeyword = v;
+                    });
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     return SliverToBoxAdapter(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -596,6 +655,13 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
         child: IconButton(
           icon: const Icon(Icons.document_scanner_outlined),
           onPressed: _isScanning ? null : _scanComics,
+        ),
+      ),
+      Tooltip(
+        message: "Search".tl,
+        child: IconButton(
+          icon: const Icon(Icons.search),
+          onPressed: () => setState(() => _searchMode = true),
         ),
       ),
       const Spacer(),
@@ -1038,13 +1104,16 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   }
 
   Widget _buildFileList() {
-    if (_currentFiles.isEmpty) {
+    var files = _filteredFiles;
+    if (files.isEmpty) {
       return SliverToBoxAdapter(
         child: Padding(
           padding: const EdgeInsets.all(32),
           child: Center(
             child: Text(
-              "Empty directory".tl,
+              _searchKeyword.isNotEmpty
+                  ? "No results found".tl
+                  : "Empty directory".tl,
               style: Theme.of(context).textTheme.bodyLarge,
             ),
           ),
@@ -1059,7 +1128,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
 
     return SliverMainAxisGroup(
       slivers: [
-        if (hasImages)
+        if (hasImages && _searchKeyword.isEmpty)
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -1070,7 +1139,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
               ),
             ),
           ),
-        if (_isLargeDirectory)
+        if (_isLargeDirectory && _searchKeyword.isEmpty)
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -1094,9 +1163,9 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
               crossAxisSpacing: 12,
             ),
             delegate: SliverChildBuilderDelegate((context, index) {
-              var file = _currentFiles[index];
+              var file = files[index];
               return _buildBrowseCard(file);
-            }, childCount: _currentFiles.length),
+            }, childCount: files.length),
           ),
         ),
       ],
@@ -2072,7 +2141,8 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   }
 
   Widget _buildBookshelf() {
-    if (_bookshelfComics.isEmpty) {
+    var comics = _filteredBookshelfComics;
+    if (comics.isEmpty) {
       return SliverToBoxAdapter(
         child: Padding(
           padding: const EdgeInsets.all(32),
@@ -2081,7 +2151,11 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
               children: [
                 const Icon(Icons.collections_bookmark_outlined, size: 48),
                 const SizedBox(height: 16),
-                Text("No imported comics".tl),
+                Text(
+                  _searchKeyword.isNotEmpty
+                      ? "No results found".tl
+                      : "No imported comics".tl,
+                ),
               ],
             ),
           ),
@@ -2095,7 +2169,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Text(
-              "${_bookshelfComics.length} ${"comics".tl}",
+              "${comics.length} ${"comics".tl}",
               style: Theme.of(context).textTheme.titleMedium,
             ),
           ),
@@ -2103,7 +2177,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
         SliverPadding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           sliver: SliverGridComics(
-            comics: _bookshelfComics,
+            comics: comics,
             onTap: (comic, _) {
               var localComic = comic as LocalComic;
               localComic.read();
