@@ -1,0 +1,241 @@
+# macOS waifu2x static library (CPU-only mode)
+# Author: kirk
+
+cmake_minimum_required(VERSION 3.10)
+project(venera_waifu2x_macos)
+
+set(WAIFU2X_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../waifu2x-ncnn-vulkan/src")
+
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
+endif()
+
+find_package(Threads)
+
+# ncnn (CPU-only)
+option(NCNN_INSTALL_SDK "" OFF)
+option(NCNN_PIXEL_ROTATE "" OFF)
+option(NCNN_PIXEL_AFFINE "" OFF)
+option(NCNN_PIXEL_DRAWING "" OFF)
+option(NCNN_VULKAN "" OFF)
+option(NCNN_SIMPLEVK "" OFF)
+option(NCNN_BUILD_BENCHMARK "" OFF)
+option(NCNN_BUILD_TESTS "" OFF)
+option(NCNN_BUILD_TOOLS "" OFF)
+option(NCNN_BUILD_EXAMPLES "" OFF)
+option(NCNN_DISABLE_RTTI "" ON)
+option(NCNN_DISABLE_EXCEPTION "" ON)
+option(NCNN_INT8 "" OFF)
+option(NCNN_BF16 "" OFF)
+
+# waifu2x required layers only
+option(WITH_LAYER_absval "" OFF)
+option(WITH_LAYER_argmax "" OFF)
+option(WITH_LAYER_batchnorm "" OFF)
+option(WITH_LAYER_bias "" OFF)
+option(WITH_LAYER_bnll "" OFF)
+option(WITH_LAYER_concat "" OFF)
+option(WITH_LAYER_convolution "" ON)
+option(WITH_LAYER_crop "" ON)
+option(WITH_LAYER_deconvolution "" ON)
+option(WITH_LAYER_dropout "" OFF)
+option(WITH_LAYER_eltwise "" ON)
+option(WITH_LAYER_elu "" OFF)
+option(WITH_LAYER_embed "" OFF)
+option(WITH_LAYER_exp "" OFF)
+option(WITH_LAYER_flatten "" ON)
+option(WITH_LAYER_innerproduct "" ON)
+option(WITH_LAYER_input "" ON)
+option(WITH_LAYER_log "" OFF)
+option(WITH_LAYER_lrn "" OFF)
+option(WITH_LAYER_memorydata "" OFF)
+option(WITH_LAYER_mvn "" OFF)
+option(WITH_LAYER_pooling "" ON)
+option(WITH_LAYER_power "" OFF)
+option(WITH_LAYER_prelu "" OFF)
+option(WITH_LAYER_proposal "" OFF)
+option(WITH_LAYER_reduction "" OFF)
+option(WITH_LAYER_relu "" ON)
+option(WITH_LAYER_reshape "" OFF)
+option(WITH_LAYER_roipooling "" OFF)
+option(WITH_LAYER_scale "" ON)
+option(WITH_LAYER_sigmoid "" OFF)
+option(WITH_LAYER_slice "" OFF)
+option(WITH_LAYER_softmax "" OFF)
+option(WITH_LAYER_split "" ON)
+option(WITH_LAYER_spp "" OFF)
+option(WITH_LAYER_tanh "" OFF)
+option(WITH_LAYER_threshold "" OFF)
+option(WITH_LAYER_tile "" OFF)
+option(WITH_LAYER_rnn "" OFF)
+option(WITH_LAYER_lstm "" OFF)
+option(WITH_LAYER_binaryop "" OFF)
+option(WITH_LAYER_unaryop "" OFF)
+option(WITH_LAYER_convolutiondepthwise "" OFF)
+option(WITH_LAYER_padding "" ON)
+option(WITH_LAYER_squeeze "" OFF)
+option(WITH_LAYER_expanddims "" OFF)
+option(WITH_LAYER_normalize "" OFF)
+option(WITH_LAYER_permute "" OFF)
+option(WITH_LAYER_priorbox "" OFF)
+option(WITH_LAYER_detectionoutput "" OFF)
+option(WITH_LAYER_interp "" ON)
+option(WITH_LAYER_deconvolutiondepthwise "" OFF)
+option(WITH_LAYER_shufflechannel "" OFF)
+option(WITH_LAYER_instancenorm "" OFF)
+option(WITH_LAYER_clip "" OFF)
+option(WITH_LAYER_reorg "" OFF)
+option(WITH_LAYER_yolodetectionoutput "" OFF)
+option(WITH_LAYER_quantize "" OFF)
+option(WITH_LAYER_dequantize "" OFF)
+option(WITH_LAYER_yolov3detectionoutput "" OFF)
+option(WITH_LAYER_psroipooling "" OFF)
+option(WITH_LAYER_roialign "" OFF)
+option(WITH_LAYER_packing "" ON)
+option(WITH_LAYER_requantize "" OFF)
+option(WITH_LAYER_cast "" ON)
+option(WITH_LAYER_hardsigmoid "" OFF)
+option(WITH_LAYER_selu "" OFF)
+option(WITH_LAYER_hardswish "" OFF)
+option(WITH_LAYER_noop "" OFF)
+option(WITH_LAYER_pixelshuffle "" OFF)
+option(WITH_LAYER_deepcopy "" OFF)
+option(WITH_LAYER_mish "" OFF)
+option(WITH_LAYER_statisticspooling "" OFF)
+option(WITH_LAYER_swish "" OFF)
+option(WITH_LAYER_gemm "" OFF)
+option(WITH_LAYER_groupnorm "" OFF)
+option(WITH_LAYER_layernorm "" OFF)
+option(WITH_LAYER_softplus "" OFF)
+option(WITH_LAYER_gru "" OFF)
+option(WITH_LAYER_multiheadattention "" OFF)
+option(WITH_LAYER_gelu "" OFF)
+option(WITH_LAYER_convolution1d "" OFF)
+option(WITH_LAYER_pooling1d "" OFF)
+option(WITH_LAYER_convolutiondepthwise1d "" OFF)
+option(WITH_LAYER_convolution3d "" OFF)
+option(WITH_LAYER_convolutiondepthwise3d "" OFF)
+option(WITH_LAYER_pooling3d "" OFF)
+option(WITH_LAYER_matmul "" OFF)
+option(WITH_LAYER_deconvolution1d "" OFF)
+option(WITH_LAYER_deconvolutiondepthwise1d "" OFF)
+option(WITH_LAYER_deconvolution3d "" OFF)
+option(WITH_LAYER_deconvolutiondepthwise3d "" OFF)
+option(WITH_LAYER_einsum "" OFF)
+option(WITH_LAYER_deformableconv2d "" OFF)
+option(WITH_LAYER_glu "" OFF)
+option(WITH_LAYER_fold "" OFF)
+option(WITH_LAYER_unfold "" OFF)
+option(WITH_LAYER_gridsample "" OFF)
+option(WITH_LAYER_cumulativesum "" OFF)
+option(WITH_LAYER_copyto "" OFF)
+option(WITH_LAYER_erf "" OFF)
+option(WITH_LAYER_diag "" OFF)
+option(WITH_LAYER_celu "" OFF)
+option(WITH_LAYER_shrink "" OFF)
+option(WITH_LAYER_rmsnorm "" OFF)
+option(WITH_LAYER_spectrogram "" OFF)
+option(WITH_LAYER_inversespectrogram "" OFF)
+
+add_subdirectory(${WAIFU2X_SRC_DIR}/ncnn ${CMAKE_CURRENT_BINARY_DIR}/ncnn)
+
+# Image codec libraries
+include(ExternalProject)
+
+ExternalProject_Add(deps-zlib-ng
+    SOURCE_DIR "${WAIFU2X_SRC_DIR}/zlib-ng"
+    BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/zlib-ng"
+    INSTALL_DIR "${CMAKE_CURRENT_BINARY_DIR}/deps-install"
+    CMAKE_ARGS
+        -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
+        -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
+        -DBUILD_SHARED_LIBS=OFF
+        -DWITH_GZFILEOP=OFF
+        -DZLIB_COMPAT=ON
+        -DZLIB_ENABLE_TESTS=OFF
+        -DZLIBNG_ENABLE_TESTS=OFF
+        -DWITH_GTEST=OFF
+        -DWITH_FUZZERS=OFF
+        -DWITH_BENCHMARKS=OFF
+    BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --config ${CMAKE_BUILD_TYPE}
+    INSTALL_COMMAND ${CMAKE_COMMAND} --install <BINARY_DIR> --config ${CMAKE_BUILD_TYPE}
+)
+
+ExternalProject_Add(deps-libpng
+    SOURCE_DIR "${WAIFU2X_SRC_DIR}/libpng"
+    BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/libpng"
+    INSTALL_DIR "${CMAKE_CURRENT_BINARY_DIR}/deps-install"
+    CMAKE_ARGS
+        -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
+        -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
+        -DPNG_SHARED=OFF
+        -DPNG_STATIC=ON
+        -DPNG_TESTS=OFF
+        -DPNG_TOOLS=OFF
+        -DPNG_HARDWARE_OPTIMIZATIONS=ON
+        -DZLIB_ROOT=<INSTALL_DIR>
+        -DZLIB_USE_STATIC_LIBS=TRUE
+    BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --config ${CMAKE_BUILD_TYPE}
+    INSTALL_COMMAND ${CMAKE_COMMAND} --install <BINARY_DIR> --config ${CMAKE_BUILD_TYPE}
+)
+add_dependencies(deps-libpng deps-zlib-ng)
+
+ExternalProject_Add(deps-libjpeg-turbo
+    SOURCE_DIR "${WAIFU2X_SRC_DIR}/libjpeg-turbo"
+    BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/libjpeg-turbo"
+    INSTALL_DIR "${CMAKE_CURRENT_BINARY_DIR}/deps-install"
+    CMAKE_ARGS
+        -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
+        -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
+        -DENABLE_SHARED=OFF
+        -DENABLE_STATIC=ON
+        -DWITH_TURBOJPEG=OFF
+    BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --config ${CMAKE_BUILD_TYPE}
+    INSTALL_COMMAND ${CMAKE_COMMAND} --install <BINARY_DIR> --config ${CMAKE_BUILD_TYPE}
+)
+
+ExternalProject_Add(deps-libwebp
+    SOURCE_DIR "${WAIFU2X_SRC_DIR}/libwebp"
+    BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/libwebp"
+    INSTALL_DIR "${CMAKE_CURRENT_BINARY_DIR}/deps-install"
+    CMAKE_ARGS
+        -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
+        -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
+        -DBUILD_SHARED_LIBS=OFF
+        -DWEBP_ENABLE_SIMD=ON
+        -DWEBP_BUILD_ANIM_UTILS=OFF
+        -DWEBP_BUILD_CWEBP=OFF
+        -DWEBP_BUILD_DWEBP=OFF
+        -DWEBP_BUILD_GIF2WEBP=OFF
+        -DWEBP_BUILD_IMG2WEBP=OFF
+        -DWEBP_BUILD_VWEBP=OFF
+        -DWEBP_BUILD_WEBPINFO=OFF
+        -DWEBP_BUILD_WEBPMUX=OFF
+        -DWEBP_BUILD_EXTRAS=OFF
+        -DWEBP_BUILD_WEBP_JS=OFF
+        -DWEBP_NEAR_LOSSLESS=OFF
+        -DWEBP_ENABLE_SWAP_16BIT_CSP=OFF
+    BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --config ${CMAKE_BUILD_TYPE}
+    INSTALL_COMMAND ${CMAKE_COMMAND} --install <BINARY_DIR> --config ${CMAKE_BUILD_TYPE}
+)
+
+include_directories(${CMAKE_CURRENT_BINARY_DIR})
+include_directories(${WAIFU2X_SRC_DIR})
+
+# Static library for waifu2x + bridge
+add_library(venera_waifu2x STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../macos/Runner/waifu2x_bridge.cpp
+    ${WAIFU2X_SRC_DIR}/waifu2x.cpp
+)
+
+add_dependencies(venera_waifu2x deps-libpng deps-libjpeg-turbo deps-libwebp deps-zlib-ng)
+
+target_include_directories(venera_waifu2x PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/deps-install/include"
+)
+
+target_link_libraries(venera_waifu2x ncnn)
