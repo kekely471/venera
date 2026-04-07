@@ -4,28 +4,27 @@ ImageProvider? _findImageProvider(Comic comic) {
   ImageProvider image;
   if (comic is LocalComic) {
     if (comic.comicType == ComicType.webdav) {
-      var mobiDir = WebDavMobiService.decodeDirectory(comic.directory);
-      if (mobiDir != null) {
-        image = FileImage(File(FilePath.join(mobiDir, comic.cover)));
+      if (WebDavPdfService.isPdfDirectory(comic.directory)) {
+        return const AssetImage('assets/app_icon.png');
+      }
+      final localCover = WebDavCachePaths.resolveLocalCoverFile(
+        directory: comic.directory,
+        cover: comic.cover,
+      );
+      if (localCover != null) {
+        image = FileImage(localCover);
       } else {
-        var archiveStreamDir = WebDavArchiveService.decodeStreamDirectory(
-          comic.directory,
+        var coverRemotePath = WebDavCachePaths.buildRemoteCoverPath(
+          directory: comic.directory,
+          cover: comic.cover,
+          hasChapters: comic.hasChapters,
+          firstChapterId:
+              comic.chapters == null || comic.chapters!.ids.isEmpty
+                  ? null
+                  : comic.chapters!.ids.first,
+          tags: comic.tags,
         );
-        if (archiveStreamDir != null) {
-          image = FileImage(File(FilePath.join(archiveStreamDir, comic.cover)));
-        } else {
-          var archiveDir = WebDavArchiveService.decodeDirectory(
-            comic.directory,
-          );
-          if (archiveDir != null) {
-            image = FileImage(File(FilePath.join(archiveDir, comic.cover)));
-          } else {
-            var coverRemotePath = comic.hasChapters
-                ? "${comic.directory}/${comic.chapters!.ids.first}/${comic.cover}"
-                : "${comic.directory}/${comic.cover}";
-            image = WebDavComicImageProvider(coverRemotePath);
-          }
-        }
+        image = WebDavComicImageProvider(coverRemotePath);
       }
     } else {
       image = LocalComicImageProvider(comic);
@@ -43,30 +42,27 @@ ImageProvider? _findImageProvider(Comic comic) {
     if (localComic == null) {
       return null;
     }
-    var mobiDir = WebDavMobiService.decodeDirectory(localComic.directory);
-    if (mobiDir != null) {
-      image = FileImage(File(FilePath.join(mobiDir, localComic.cover)));
+    if (WebDavPdfService.isPdfDirectory(localComic.directory)) {
+      return const AssetImage('assets/app_icon.png');
+    }
+    final localCover = WebDavCachePaths.resolveLocalCoverFile(
+      directory: localComic.directory,
+      cover: localComic.cover,
+    );
+    if (localCover != null) {
+      image = FileImage(localCover);
     } else {
-      var archiveStreamDir = WebDavArchiveService.decodeStreamDirectory(
-        localComic.directory,
+      var coverRemotePath = WebDavCachePaths.buildRemoteCoverPath(
+        directory: localComic.directory,
+        cover: localComic.cover,
+        hasChapters: localComic.hasChapters,
+        firstChapterId:
+            localComic.chapters == null || localComic.chapters!.ids.isEmpty
+                ? null
+                : localComic.chapters!.ids.first,
+        tags: localComic.tags,
       );
-      if (archiveStreamDir != null) {
-        image = FileImage(
-          File(FilePath.join(archiveStreamDir, localComic.cover)),
-        );
-      } else {
-        var archiveDir = WebDavArchiveService.decodeDirectory(
-          localComic.directory,
-        );
-        if (archiveDir != null) {
-          image = FileImage(File(FilePath.join(archiveDir, localComic.cover)));
-        } else {
-          var coverRemotePath = localComic.hasChapters
-              ? "${localComic.directory}/${localComic.chapters!.ids.first}/${localComic.cover}"
-              : "${localComic.directory}/${localComic.cover}";
-          image = WebDavComicImageProvider(coverRemotePath);
-        }
-      }
+      image = WebDavComicImageProvider(coverRemotePath);
     }
   } else {
     image = CachedImageProvider(

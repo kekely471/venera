@@ -9,12 +9,15 @@ import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/favorites.dart';
 import 'package:venera/foundation/log.dart';
+import 'package:venera/foundation/webdav_cache.dart';
 import 'package:venera/foundation/webdav_archive_service.dart';
 import 'package:venera/foundation/webdav_comic_manager.dart';
 import 'package:venera/foundation/webdav_epub_service.dart';
 import 'package:venera/foundation/webdav_mobi_service.dart';
+import 'package:venera/foundation/webdav_pdf_service.dart';
 import 'package:venera/network/download.dart';
 import 'package:venera/pages/reader/reader.dart';
+import 'package:venera/pages/webdav_pdf_reader_page.dart';
 import 'package:venera/utils/io.dart';
 
 import 'app.dart';
@@ -81,19 +84,9 @@ class LocalComic with HistoryMixin implements Comic {
   File get coverFile => File(FilePath.join(baseDir, cover));
 
   String get baseDir {
-    var mobiDir = WebDavMobiService.decodeDirectory(directory);
-    if (mobiDir != null) {
-      return mobiDir;
-    }
-    var archiveStreamDir = WebDavArchiveService.decodeStreamDirectory(
-      directory,
-    );
-    if (archiveStreamDir != null) {
-      return archiveStreamDir;
-    }
-    var archiveDir = WebDavArchiveService.decodeDirectory(directory);
-    if (archiveDir != null) {
-      return archiveDir;
+    var cacheDir = WebDavCachePaths.decodeCachedDirectory(directory);
+    if (cacheDir != null) {
+      return cacheDir;
     }
     return (directory.contains('/') || directory.contains('\\'))
         ? directory
@@ -125,6 +118,17 @@ class LocalComic with HistoryMixin implements Comic {
   int? get maxPage => null;
 
   void read() {
+    final pdfRemotePath = WebDavPdfService.decodeDirectory(directory);
+    if (comicType == ComicType.webdav && pdfRemotePath != null) {
+      App.rootContext.to(
+        () => WebDavPdfReaderPage.webdav(
+          remotePath: pdfRemotePath,
+          title: title,
+        ),
+      );
+      return;
+    }
+
     final readerName = comicType == ComicType.webdav
         ? _normalizePotentialMojibakeTitle(title)
         : title;
@@ -769,17 +773,6 @@ class LocalManager with ChangeNotifier {
     return aName.compareTo(bName);
   }
 
-  Directory _getWebDavImageCacheDir(String directory) {
-    var normalized = directory;
-    if (normalized.startsWith('/')) {
-      normalized = normalized.substring(1);
-    }
-    while (normalized.startsWith('\\')) {
-      normalized = normalized.substring(1);
-    }
-    return Directory(FilePath.join(App.cachePath, 'webdav_comics', normalized));
-  }
-
   bool isDownloaded(
     String id,
     ComicType type, [
@@ -970,12 +963,11 @@ class LocalManager with ChangeNotifier {
     if (comics.isEmpty) return 0;
     batchDeleteComics(comics, true, true);
     // 额外清理缓存目录（可能存在无记录的残留缓存）
-    var webdavMobiDir = Directory(FilePath.join(App.cachePath, 'webdav_mobi'));
-    var webdavComicsDir = Directory(
-      FilePath.join(App.cachePath, 'webdav_comics'),
-    );
-    webdavMobiDir.deleteIgnoreError(recursive: true);
-    webdavComicsDir.deleteIgnoreError(recursive: true);
+    for (final dirName in WebDavCachePaths.allCacheDirectoryNames) {
+      WebDavCachePaths.cacheDirectory(dirName).deleteIgnoreError(
+        recursive: true,
+      );
+    }
     return comics.length;
   }
 
@@ -1003,29 +995,10 @@ class LocalManager with ChangeNotifier {
     }
     // WebDAV 漫画删除时清除缓存
     if (c.comicType == ComicType.webdav) {
-      var mobiStreamDir = WebDavMobiService.decodeStreamDirectory(c.directory);
-      if (mobiStreamDir != null) {
-        Directory(mobiStreamDir).deleteIgnoreError(recursive: true);
-      } else {
-        var mobiDir = WebDavMobiService.decodeDirectory(c.directory);
-        if (mobiDir != null) {
-          Directory(mobiDir).deleteIgnoreError(recursive: true);
-        } else {
-          var archiveStreamDir = WebDavArchiveService.decodeStreamDirectory(
-            c.directory,
-          );
-          if (archiveStreamDir != null) {
-            Directory(archiveStreamDir).deleteIgnoreError(recursive: true);
-          } else {
-            var archiveDir = WebDavArchiveService.decodeDirectory(c.directory);
-            if (archiveDir != null) {
-              Directory(archiveDir).deleteIgnoreError(recursive: true);
-            } else {
-              var cacheDir = _getWebDavImageCacheDir(c.directory);
-              cacheDir.deleteIgnoreError(recursive: true);
-            }
-          }
-        }
+      for (final entity in WebDavCachePaths.cacheEntitiesForDirectory(
+        c.directory,
+      )) {
+        entity.deleteIgnoreError(recursive: true);
       }
     }
     // Deleting a local comic means that it's no longer available, thus both favorite and history should be deleted.
@@ -1085,7 +1058,7 @@ class LocalManager with ChangeNotifier {
     }
 
     var shouldRemovedDirs = <Directory>[];
-    var webdavCacheDirs = <Directory>[];
+    var webdavCacheEntities = <FileSystemEntity>[];
     _db.execute('BEGIN TRANSACTION;');
     try {
       for (var c in comics) {
@@ -1096,33 +1069,9 @@ class LocalManager with ChangeNotifier {
           }
         }
         if (c.comicType == ComicType.webdav) {
-          var mobiStreamDir = WebDavMobiService.decodeStreamDirectory(
-            c.directory,
+          webdavCacheEntities.addAll(
+            WebDavCachePaths.cacheEntitiesForDirectory(c.directory),
           );
-          if (mobiStreamDir != null) {
-            webdavCacheDirs.add(Directory(mobiStreamDir));
-          } else {
-            var mobiDir = WebDavMobiService.decodeDirectory(c.directory);
-            if (mobiDir != null) {
-              webdavCacheDirs.add(Directory(mobiDir));
-            } else {
-              var archiveStreamDir = WebDavArchiveService.decodeStreamDirectory(
-                c.directory,
-              );
-              if (archiveStreamDir != null) {
-                webdavCacheDirs.add(Directory(archiveStreamDir));
-              } else {
-                var archiveDir = WebDavArchiveService.decodeDirectory(
-                  c.directory,
-                );
-                if (archiveDir != null) {
-                  webdavCacheDirs.add(Directory(archiveDir));
-                } else {
-                  webdavCacheDirs.add(_getWebDavImageCacheDir(c.directory));
-                }
-              }
-            }
-          }
         }
         _db.execute('DELETE FROM comics WHERE id = ? AND comic_type = ?;', [
           c.id,
@@ -1148,8 +1097,10 @@ class LocalManager with ChangeNotifier {
     if (removeFileOnDisk) {
       _deleteDirectories(shouldRemovedDirs);
     }
-    if (webdavCacheDirs.isNotEmpty) {
-      _deleteDirectories(webdavCacheDirs);
+    if (webdavCacheEntities.isNotEmpty) {
+      for (final entity in webdavCacheEntities) {
+        entity.deleteIgnoreError(recursive: true);
+      }
     }
   }
 

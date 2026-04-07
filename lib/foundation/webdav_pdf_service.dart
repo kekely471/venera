@@ -26,12 +26,42 @@ class WebDavPdfService {
   WebDavPdfService._();
 
   static WebDavPdfService? _instance;
+  static const String pdfDirectoryPrefix = 'webdav-pdf://';
 
   factory WebDavPdfService() {
     return _instance ??= WebDavPdfService._();
   }
 
   static const int _metaSchemaVersion = 1;
+
+  static bool isPdfDirectory(String directory) {
+    return directory.startsWith(pdfDirectoryPrefix);
+  }
+
+  static String encodeDirectory(String remotePath) {
+    return '$pdfDirectoryPrefix${Uri.encodeComponent(_normalizeStatic(remotePath))}';
+  }
+
+  static String? decodeDirectory(String encodedPath) {
+    if (!isPdfDirectory(encodedPath)) return null;
+    try {
+      return Uri.decodeComponent(encodedPath.substring(pdfDirectoryPrefix.length));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static String buildBookId(String remotePath) {
+    final normalized = _normalizeStatic(remotePath);
+    final key = md5.convert(utf8.encode(normalized)).toString();
+    return 'webdav_pdf_$key';
+  }
+
+  static Directory cacheDirectoryForRemotePath(String remotePath) {
+    final normalized = _normalizeStatic(remotePath);
+    final key = md5.convert(utf8.encode(normalized)).toString();
+    return Directory(FilePath.join(App.cachePath, 'webdav_pdf', key));
+  }
 
   Future<WebDavPdfBook> prepareFromWebDav({
     required String remotePath,
@@ -40,8 +70,7 @@ class WebDavPdfService {
     DateTime? remoteModifiedTime,
   }) async {
     remotePath = _normalizeRemotePath(remotePath);
-    final key = md5.convert(utf8.encode(remotePath)).toString();
-    final cacheDir = Directory(FilePath.join(App.cachePath, 'webdav_pdf', key));
+    final cacheDir = cacheDirectoryForRemotePath(remotePath);
     final metadataFile = cacheDir.joinFile('meta.json');
     final pdfFile = cacheDir.joinFile('book.pdf');
     final metadata = await _loadMetadata(metadataFile);
@@ -66,7 +95,7 @@ class WebDavPdfService {
     final createdAt = DateTime.now();
     final metadataToSave = <String, dynamic>{
       'schema': _metaSchemaVersion,
-      'id': 'webdav_pdf_$key',
+      'id': buildBookId(remotePath),
       'title': _stripFileExtension(fileName),
       'createdAt': createdAt.millisecondsSinceEpoch,
       'remotePath': remotePath,
@@ -149,6 +178,10 @@ class WebDavPdfService {
   }
 
   String _normalizeRemotePath(String path) {
+    return _normalizeStatic(path);
+  }
+
+  static String _normalizeStatic(String path) {
     if (!path.startsWith('/')) {
       path = '/$path';
     }

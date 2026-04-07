@@ -6,11 +6,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/local.dart';
-import 'package:venera/foundation/webdav_archive_service.dart';
+import 'package:venera/foundation/webdav_cache.dart';
 import 'package:venera/foundation/webdav_comic_manager.dart';
-import 'package:venera/foundation/webdav_mobi_service.dart';
+import 'package:venera/foundation/webdav_pdf_service.dart';
 import 'package:venera/network/images.dart';
-import 'package:venera/utils/io.dart';
 import '../history.dart';
 import 'base_image_provider.dart';
 import 'history_image_provider.dart' as image_provider;
@@ -31,33 +30,30 @@ class HistoryImageProvider
   @override
   Future<Uint8List> load(chunkEvents, checkStop) async {
     var url = history.cover;
-    if (!url.contains('/')) {
+    if (!url.contains('/') || history.type == ComicType.webdav) {
       var localComic = LocalManager().find(history.id, history.type);
       if (localComic != null) {
         if (localComic.comicType == ComicType.webdav) {
-          var mobiDir = WebDavMobiService.decodeDirectory(localComic.directory);
-          if (mobiDir != null) {
-            return File(FilePath.join(mobiDir, localComic.cover)).readAsBytes();
+          if (WebDavPdfService.isPdfDirectory(localComic.directory)) {
+            return _transparentImage;
           }
-          var archiveStreamDir = WebDavArchiveService.decodeStreamDirectory(
-            localComic.directory,
+          final localCover = WebDavCachePaths.resolveLocalCoverFile(
+            directory: localComic.directory,
+            cover: localComic.cover,
           );
-          if (archiveStreamDir != null) {
-            return File(
-              FilePath.join(archiveStreamDir, localComic.cover),
-            ).readAsBytes();
+          if (localCover != null) {
+            return localCover.readAsBytes();
           }
-          var archiveDir = WebDavArchiveService.decodeDirectory(
-            localComic.directory,
+          var coverRemotePath = WebDavCachePaths.buildRemoteCoverPath(
+            directory: localComic.directory,
+            cover: localComic.cover,
+            hasChapters: localComic.hasChapters,
+            firstChapterId:
+                localComic.chapters == null || localComic.chapters!.ids.isEmpty
+                    ? null
+                    : localComic.chapters!.ids.first,
+            tags: localComic.tags,
           );
-          if (archiveDir != null) {
-            return File(
-              FilePath.join(archiveDir, localComic.cover),
-            ).readAsBytes();
-          }
-          var coverRemotePath = localComic.hasChapters
-              ? "${localComic.directory}/${localComic.chapters!.ids.first}/${localComic.cover}"
-              : "${localComic.directory}/${localComic.cover}";
           try {
             return await WebDavComicManager().readFile(coverRemotePath);
           } on DioException catch (e) {
@@ -77,6 +73,9 @@ class HistoryImageProvider
           }
         }
         return localComic.coverFile.readAsBytes();
+      }
+      if (history.type == ComicType.webdav) {
+        return _transparentImage;
       }
       var comicSource =
           history.type.comicSource ?? (throw "Comic source not found.");

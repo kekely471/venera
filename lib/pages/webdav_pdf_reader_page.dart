@@ -7,6 +7,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:pdfrx/pdfrx.dart';
+import 'package:venera/foundation/comic_type.dart';
+import 'package:venera/foundation/history.dart';
 import 'package:venera/foundation/log.dart';
 import 'package:venera/foundation/webdav_comic_manager.dart';
 import 'package:venera/foundation/webdav_pdf_service.dart';
@@ -52,6 +54,8 @@ class _WebDavPdfReaderPageState extends State<WebDavPdfReaderPage> {
   bool _isPreparingDocument = true;
   String? _loadError;
   int _readSession = 0;
+  int? _lastSavedPage;
+  int? _lastSavedMaxPage;
 
   FocusNode get _keyboardFocusNode =>
       _focusNode ??= FocusNode(debugLabel: 'webdav_pdf_reader');
@@ -59,6 +63,7 @@ class _WebDavPdfReaderPageState extends State<WebDavPdfReaderPage> {
   @override
   void initState() {
     super.initState();
+    _restoreReadingProgress();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _keyboardFocusNode.requestFocus();
@@ -68,11 +73,60 @@ class _WebDavPdfReaderPageState extends State<WebDavPdfReaderPage> {
 
   @override
   void dispose() {
+    _recordReadingProgress();
     _readSession++;
     _rangeChunkInFlight.clear();
     _rangeChunkCache.clear();
     _focusNode?.dispose();
     super.dispose();
+  }
+
+  String? get _historyId {
+    final remotePath = widget.remotePath;
+    if (remotePath == null) return null;
+    return WebDavPdfService.buildBookId(remotePath);
+  }
+
+  void _restoreReadingProgress() {
+    final historyId = _historyId;
+    if (historyId == null) return;
+
+    final history = HistoryManager().find(historyId, ComicType.webdav);
+    if (history == null) return;
+
+    _currentPage = history.page <= 0 ? 1 : history.page;
+    _totalPages = history.maxPage ?? 0;
+    _lastSavedPage = history.page <= 0 ? 1 : history.page;
+    _lastSavedMaxPage = history.maxPage;
+  }
+
+  void _recordReadingProgress() {
+    final historyId = _historyId;
+    final remotePath = widget.remotePath;
+    if (historyId == null || remotePath == null) return;
+
+    final page = _currentPage <= 0 ? 1 : _currentPage;
+    final maxPage = _totalPages > 0 ? _totalPages : null;
+    if (_lastSavedPage == page && _lastSavedMaxPage == maxPage) {
+      return;
+    }
+
+    _lastSavedPage = page;
+    _lastSavedMaxPage = maxPage;
+
+    final history = History.fromMap({
+      'type': ComicType.webdav.value,
+      'id': historyId,
+      'ep': 1,
+      'page': page,
+      'max_page': maxPage,
+      'time': DateTime.now().millisecondsSinceEpoch,
+      'title': widget.title,
+      'subtitle': '',
+      'cover': remotePath,
+      'readEpisode': const <String>[],
+    });
+    HistoryManager().addHistory(history);
   }
 
   Future<void> _prepareDocumentRef() async {
@@ -261,6 +315,7 @@ class _WebDavPdfReaderPageState extends State<WebDavPdfReaderPage> {
     setState(() {
       _currentPage = target;
     });
+    _recordReadingProgress();
   }
 
   Future<void> _goPrevPage() async => _goToPage(_currentPage - 1);
@@ -268,15 +323,22 @@ class _WebDavPdfReaderPageState extends State<WebDavPdfReaderPage> {
   Future<void> _goNextPage() async => _goToPage(_currentPage + 1);
 
   void _syncPageState(int totalPages) {
+    final oldTotalPages = _totalPages;
     _totalPages = totalPages;
     if (totalPages <= 0) return;
     final clamped = _currentPage.clamp(1, totalPages);
-    if (clamped == _currentPage) return;
+    if (clamped == _currentPage) {
+      if (oldTotalPages != totalPages) {
+        _recordReadingProgress();
+      }
+      return;
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       setState(() {
         _currentPage = clamped;
       });
+      _recordReadingProgress();
     });
   }
 

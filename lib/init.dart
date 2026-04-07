@@ -10,6 +10,7 @@ import 'package:venera/foundation/cache_manager.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/foundation/js_engine.dart';
 import 'package:venera/foundation/log.dart';
+import 'package:venera/foundation/webdav_config.dart';
 import 'package:venera/network/cookie_jar.dart';
 import 'package:venera/pages/comic_source_page.dart';
 import 'package:venera/pages/follow_updates_page.dart';
@@ -59,7 +60,7 @@ Future<void> init() async {
     handleTextShare();
     try {
       await FlutterDisplayMode.setHighRefreshRate();
-    } catch(e) {
+    } catch (e) {
       Log.error("Display Mode", "Failed to set high refresh rate: $e");
     }
   }
@@ -77,6 +78,8 @@ Future<void> init() async {
 }
 
 void _checkOldConfigs() {
+  final migratedWebDav = WebDavSettings.migrateLegacySettings();
+
   if (appdata.settings['searchSources'] == null) {
     appdata.settings['searchSources'] = ComicSource.all()
         .where((e) => e.searchPageData != null)
@@ -85,20 +88,22 @@ void _checkOldConfigs() {
   }
 
   if (appdata.implicitData['webdavAutoSync'] == null) {
-    var webdavConfig = appdata.settings['webdav'];
-    if (webdavConfig is List &&
-        webdavConfig.length == 3 &&
-        webdavConfig.whereType<String>().length == 3) {
-      appdata.implicitData['webdavAutoSync'] = true;
-    } else {
-      appdata.implicitData['webdavAutoSync'] = false;
-    }
+    appdata.implicitData['webdavAutoSync'] =
+        WebDavSettings.readSyncConfig()?.isConfigured ?? false;
     appdata.writeImplicitData();
   }
 
-  if (appdata.settings['comicSourceListUrl'].toString().contains("git.nyne.dev")) {
+  if (appdata.settings['comicSourceListUrl'].toString().contains(
+    "git.nyne.dev",
+  )) {
     // migrate to jsdelivr cdn
-    appdata.settings['comicSourceListUrl'] = "https://cdn.jsdelivr.net/gh/venera-app/venera-configs@main/index.json";
+    appdata.settings['comicSourceListUrl'] =
+        "https://cdn.jsdelivr.net/gh/venera-app/venera-configs@main/index.json";
+    appdata.saveData();
+    return;
+  }
+
+  if (migratedWebDav) {
     appdata.saveData();
   }
 }

@@ -5,6 +5,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:archive/archive.dart' as archive;
 import 'package:crypto/crypto.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/log.dart';
@@ -107,6 +108,166 @@ class WebDavEpubService {
       );
     } catch (_) {
       return null;
+    }
+  }
+
+  /// 全量下载 EPUB 后在本地解析并缓存所有图片。
+  Future<WebDavEpubBook> prepareFromWebDav({
+    required String remotePath,
+    required String fileName,
+    int? remoteSize,
+    DateTime? remoteModifiedTime,
+  }) async {
+    remotePath = _normalizeRemotePath(remotePath);
+    final key = md5.convert(utf8.encode(remotePath)).toString();
+    final metaDir = Directory(
+      FilePath.join(App.cachePath, 'webdav_epub_stream', key),
+    );
+    final metadataFile = metaDir.joinFile('meta.json');
+    final existingMeta = await _loadMetadata(metadataFile);
+
+    if (_isStreamCacheUsable(
+      existingMeta,
+      remoteSize,
+      remoteModifiedTime,
+      metaDir,
+    )) {
+      try {
+        return _bookFromStreamMetadata(existingMeta!, fileName);
+      } catch (e) {
+        Log.warning('WebDavEpubService', 'Cached full epub meta corrupted: $e');
+      }
+    }
+
+    final bytes = await WebDavComicManager().readFile(remotePath);
+    if (bytes.isEmpty) {
+      throw Exception('EPUB file is empty');
+    }
+
+    archive.Archive zip;
+    try {
+      zip = archive.ZipDecoder().decodeBytes(bytes);
+    } catch (e, s) {
+      Log.warning('WebDavEpubService', 'Failed to decode epub zip: $e\n$s');
+      throw Exception('Failed to decode EPUB file');
+    }
+
+    try {
+      final fileMap = <String, archive.ArchiveFile>{};
+      for (final file in zip.files) {
+        if (!file.isFile) continue;
+        fileMap[file.name.replaceAll('\\', '/')] = file;
+      }
+
+      final containerEntry = fileMap['META-INF/container.xml'] ??
+          fileMap['meta-inf/container.xml'];
+      if (containerEntry == null) {
+        throw Exception('EPUB container.xml not found');
+      }
+
+      final containerXml = utf8.decode(
+        containerEntry.readBytes() ?? Uint8List(0),
+        allowMalformed: true,
+      );
+      final opfPath = _parseContainerXml(containerXml);
+      if (opfPath == null) {
+        throw Exception('EPUB content.opf not found');
+      }
+
+      final opfEntry = fileMap[opfPath];
+      if (opfEntry == null) {
+        throw Exception('EPUB OPF entry not found');
+      }
+
+      final opfXml = utf8.decode(
+        opfEntry.readBytes() ?? Uint8List(0),
+        allowMalformed: true,
+      );
+      final opfDir = opfPath.contains('/')
+          ? opfPath.substring(0, opfPath.lastIndexOf('/') + 1)
+          : '';
+      final epubMeta = _parseContentOpf(opfXml, opfDir);
+
+      final imageEntries = <_LocalEpubImageEntry>[];
+      for (final href in epubMeta.imageHrefs) {
+        final entry = fileMap[href];
+        if (entry == null) continue;
+        final imageBytes = entry.readBytes();
+        if (imageBytes == null || imageBytes.isEmpty) continue;
+        imageEntries.add(
+          _LocalEpubImageEntry(
+            fileName: href,
+            bytes: imageBytes,
+            isCover: href == epubMeta.coverHref,
+          ),
+        );
+      }
+
+      if (imageEntries.isEmpty) {
+        throw Exception('No images found in EPUB');
+      }
+
+      await metaDir.deleteIgnoreError(recursive: true);
+      await metaDir.create(recursive: true);
+
+      final pseudoRecords = <_EpubZipImageRecord>[];
+      var coverIndex = imageEntries.indexWhere((e) => e.isCover);
+      if (coverIndex < 0) coverIndex = 0;
+
+      for (var i = 0; i < imageEntries.length; i++) {
+        final image = imageEntries[i];
+        final ext = _pickImageExtensionFromNameOrBytes(image.fileName, image.bytes);
+        await metaDir.joinFile('$i.$ext').writeAsBytes(image.bytes, flush: false);
+        pseudoRecords.add(
+          _EpubZipImageRecord(
+            fileName: image.fileName,
+            method: 0,
+            compressedSize: image.bytes.length,
+            uncompressedSize: image.bytes.length,
+            localHeaderOffset: 0,
+            isCover: i == coverIndex,
+          ),
+        );
+      }
+
+      final coverEntry = imageEntries[coverIndex];
+      final coverExt = _pickImageExtensionFromNameOrBytes(
+        coverEntry.fileName,
+        coverEntry.bytes,
+      );
+      final coverName = 'cover.$coverExt';
+      await metaDir.joinFile(coverName).writeAsBytes(
+        coverEntry.bytes,
+        flush: false,
+      );
+
+      final createdAt = DateTime.now();
+      final metadataToSave = <String, dynamic>{
+        'schema': _streamMetaSchemaVersion,
+        'id': 'webdav_epub_stream_$key',
+        'title': epubMeta.title ?? _stripFileExtension(fileName),
+        'subtitle': epubMeta.author ?? '',
+        'tags': const <String>['webdav:epub', 'webdav:full'],
+        'directory': encodeStreamDirectory(metaDir.path),
+        'cover': coverName,
+        'pages': imageEntries.length,
+        'imageCount': imageEntries.length,
+        'coverIndex': coverIndex,
+        'entries': pseudoRecords.map((e) => e.toJson()).toList(),
+        'createdAt': createdAt.millisecondsSinceEpoch,
+        'remotePath': remotePath,
+        'remoteSize': remoteSize ?? bytes.length,
+        'remoteModifiedTime': remoteModifiedTime?.millisecondsSinceEpoch,
+        'fullyCached': true,
+      };
+      await metadataFile.writeAsString(jsonEncode(metadataToSave));
+      _streamMetaCache.remove(key);
+      return _bookFromStreamMetadata(metadataToSave, fileName);
+    } catch (_) {
+      await metaDir.deleteIgnoreError(recursive: true);
+      rethrow;
+    } finally {
+      zip.clearSync();
     }
   }
 
@@ -525,7 +686,9 @@ class WebDavEpubService {
   String? _parseContainerXml(String xml) {
     // <rootfile full-path="OEBPS/content.opf" .../>
     final match = _containerRootfileRe.firstMatch(xml);
-    return match?.group(1);
+    final path = match?.group(1);
+    if (path == null) return null;
+    return Uri.decodeFull(path);
   }
 
   /// 从 content.opf 中提取图片清单和元数据
@@ -1152,6 +1315,18 @@ class _EpubContentMeta {
     this.author,
     this.coverHref,
     required this.imageHrefs,
+  });
+}
+
+class _LocalEpubImageEntry {
+  final String fileName;
+  final Uint8List bytes;
+  final bool isCover;
+
+  const _LocalEpubImageEntry({
+    required this.fileName,
+    required this.bytes,
+    required this.isCover,
   });
 }
 

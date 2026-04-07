@@ -11,11 +11,13 @@ import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/history.dart';
 import 'package:venera/foundation/image_provider/history_image_provider.dart';
+import 'package:venera/foundation/webdav_cache.dart';
 import 'package:venera/foundation/image_provider/webdav_comic_image.dart';
 import 'package:venera/foundation/local.dart';
 import 'package:venera/foundation/log.dart';
 import 'package:venera/foundation/webdav_archive_service.dart';
 import 'package:venera/foundation/webdav_comic_manager.dart';
+import 'package:venera/foundation/webdav_config.dart';
 import 'package:venera/foundation/webdav_epub_service.dart';
 import 'package:venera/foundation/webdav_mobi_service.dart';
 import 'package:venera/foundation/webdav_reading_progress.dart';
@@ -51,6 +53,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
 
   // 状态
   bool _isConfigured = false;
+  bool _useSyncConfig = false;
   bool _isScanning = false;
   bool _isBrowsing = false;
   String _currentPath = '/';
@@ -80,6 +83,8 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   // 搜索
   bool _searchMode = false;
   String _searchKeyword = '';
+  _BrowseFilter _browseFilter = _BrowseFilter.all;
+  _BrowseSort _browseSort = _BrowseSort.nameAsc;
 
   // 书架数据
   List<LocalComic> _bookshelfComics = [];
@@ -91,17 +96,12 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   void initState() {
     super.initState();
     _loadRecentHistories();
-    var config = _manager.config;
-    _urlController = TextEditingController(text: config?['url'] ?? '');
-    _usernameController = TextEditingController(
-      text: config?['username'] ?? '',
-    );
-    _passwordController = TextEditingController(
-      text: config?['password'] ?? '',
-    );
-    _basePathController = TextEditingController(
-      text: config?['basePath'] ?? '/',
-    );
+    _useSyncConfig = _manager.useSyncConfig;
+    final config = _manager.config;
+    _urlController = TextEditingController(text: config?.url ?? '');
+    _usernameController = TextEditingController(text: config?.username ?? '');
+    _passwordController = TextEditingController(text: config?.password ?? '');
+    _basePathController = TextEditingController(text: config?.basePath ?? '/');
     _isConfigured = _manager.isConfigured;
 
     if (_isConfigured) {
@@ -133,23 +133,46 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
     super.dispose();
   }
 
-  Future<void> _saveConfig() async {
-    var url = _urlController.text.trim();
-    var username = _usernameController.text.trim();
-    var password = _passwordController.text.trim();
+  WebDavConnectionConfig? _readConfigInput() {
+    if (_useSyncConfig) {
+      final syncConfig = WebDavSettings.readSyncConfig();
+      if (syncConfig == null || !syncConfig.isConfigured) {
+        setState(() {
+          _error = 'Sync WebDAV is not configured';
+        });
+        return null;
+      }
+      return syncConfig;
+    }
+
+    final url = _urlController.text.trim();
+    final username = _usernameController.text.trim();
+    final password = _passwordController.text.trim();
     var basePath = _basePathController.text.trim();
 
     if (url.isEmpty) {
       setState(() {
         _error = 'URL is required';
       });
-      return;
+      return null;
     }
     if (basePath.isEmpty) {
       basePath = '/';
     }
 
-    await _manager.saveConfig(url, username, password, basePath);
+    return WebDavConnectionConfig(
+      url: url,
+      username: username,
+      password: password,
+      basePath: basePath,
+    ).normalized();
+  }
+
+  Future<void> _saveConfig() async {
+    final config = _readConfigInput();
+    if (config == null) return;
+
+    await _manager.saveConfig(config: config, useSyncConfig: _useSyncConfig);
     setState(() {
       _isConfigured = true;
       _error = null;
@@ -159,18 +182,65 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   }
 
   Future<void> _testConnection() async {
+    final config = _readConfigInput();
+    if (config == null) return;
+
     try {
-      // 临时保存配置以测试
-      await _saveConfig();
-      await _manager.listDirectory('/');
+      await _manager.testConnection(config);
       if (mounted) {
+        setState(() {
+          _error = null;
+        });
         showToast(message: "Connection Successful".tl, context: context);
       }
     } catch (e) {
       if (mounted) {
+        setState(() {
+          _error = e.toString();
+        });
         showToast(message: "${"Connection Failed".tl}: $e", context: context);
       }
     }
+  }
+
+  bool get _hasSyncWebDavConfig {
+    return WebDavSettings.readSyncConfig()?.isConfigured ?? false;
+  }
+
+  void _fillConfigInputs(WebDavConnectionConfig? config) {
+    _urlController.text = config?.url ?? '';
+    _usernameController.text = config?.username ?? '';
+    _passwordController.text = config?.password ?? '';
+    _basePathController.text = config?.basePath ?? '/';
+  }
+
+  void _applySyncWebDavConfig() {
+    final config = WebDavSettings.readSyncConfig();
+    if (config == null || !config.isConfigured) {
+      showToast(message: "No sync WebDAV config".tl, context: context);
+      return;
+    }
+
+    setState(() {
+      _fillConfigInputs(config);
+    });
+  }
+
+  void _setUseSyncConfig(bool value) {
+    if (value && !_hasSyncWebDavConfig) {
+      showToast(message: "No sync WebDAV config".tl, context: context);
+      return;
+    }
+    setState(() {
+      _useSyncConfig = value;
+      _error = null;
+      final ownConfig = _manager.ownConfig;
+      if (_useSyncConfig) {
+        _fillConfigInputs(WebDavSettings.readSyncConfig());
+      } else if (ownConfig != null) {
+        _fillConfigInputs(ownConfig);
+      }
+    });
   }
 
   Future<void> _loadDirectory(String path) async {
@@ -180,6 +250,14 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
     });
     try {
       var files = await _manager.listDirectory(path);
+      files = files
+          .where(
+            (f) => !WebDavCachePaths.isInternalMetadataEntry(
+              name: f.name,
+              isDirectory: f.isDirectory,
+            ),
+          )
+          .toList();
       files.sort((a, b) {
         if (a.isDirectory != b.isDirectory) {
           return a.isDirectory ? -1 : 1;
@@ -196,6 +274,8 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
           _isLargeDirectory = isLargeDirectory;
           _searchMode = false;
           _searchKeyword = '';
+          _browseFilter = _BrowseFilter.all;
+          _browseSort = _BrowseSort.nameAsc;
         });
       }
       if (_directoryCoverFutureCache.length > 1200) {
@@ -231,7 +311,11 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
     final session = _coverPrefetchSession;
     final candidates = files
         .where(
-          (f) => f.isDirectory || _isMobiFile(f.name) || _isArchiveFile(f.name) || _isEpubFile(f.name),
+          (f) =>
+              f.isDirectory ||
+              _isMobiFile(f.name) ||
+              _isArchiveFile(f.name) ||
+              _isEpubFile(f.name),
         )
         .take(
           isLargeDirectory
@@ -359,11 +443,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   }
 
   File _getRemoteImageCacheFile(String remotePath) {
-    var relative = remotePath;
-    if (relative.startsWith('/')) {
-      relative = relative.substring(1);
-    }
-    return File(FilePath.join(App.cachePath, 'webdav_comics', relative));
+    return WebDavCachePaths.remoteImageCacheFile(remotePath);
   }
 
   Future<void> _scanComics() async {
@@ -521,6 +601,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
     await _manager.clearConfig();
     setState(() {
       _isConfigured = false;
+      _useSyncConfig = false;
       _currentFiles = [];
       _scannedComics = [];
       _currentPath = '/';
@@ -546,11 +627,45 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
 
   // 搜索过滤
   List<WebDavFile> get _filteredFiles {
-    if (_searchKeyword.isEmpty) return _currentFiles;
-    var kw = _searchKeyword.toLowerCase();
-    return _currentFiles
-        .where((f) => f.name.toLowerCase().contains(kw))
-        .toList();
+    Iterable<WebDavFile> files = _currentFiles;
+
+    if (_searchKeyword.isNotEmpty) {
+      var kw = _searchKeyword.toLowerCase();
+      files = files.where((f) => f.name.toLowerCase().contains(kw));
+    }
+
+    files = files.where((f) {
+      switch (_browseFilter) {
+        case _BrowseFilter.all:
+          return true;
+        case _BrowseFilter.directories:
+          return f.isDirectory;
+        case _BrowseFilter.comics:
+          return f.isDirectory ||
+              _isMobiFile(f.name) ||
+              _isArchiveFile(f.name) ||
+              _isEpubFile(f.name) ||
+              _isPdfFile(f.name);
+        case _BrowseFilter.files:
+          return !f.isDirectory;
+      }
+    });
+
+    final result = files.toList();
+    result.sort((a, b) {
+      if (_browseSort == _BrowseSort.modifiedDesc) {
+        final aTime = a.modifiedTime?.millisecondsSinceEpoch ?? 0;
+        final bTime = b.modifiedTime?.millisecondsSinceEpoch ?? 0;
+        if (aTime != bTime) {
+          return bTime.compareTo(aTime);
+        }
+      }
+      if (a.isDirectory != b.isDirectory) {
+        return a.isDirectory ? -1 : 1;
+      }
+      return a.name.compareTo(b.name);
+    });
+    return result;
   }
 
   List<LocalComic> get _filteredBookshelfComics {
@@ -604,10 +719,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           child: Row(
             children: [
-              IconButton(
-                icon: const Icon(Icons.close),
-                onPressed: _exitSearch,
-              ),
+              IconButton(icon: const Icon(Icons.close), onPressed: _exitSearch),
               Expanded(
                 child: TextField(
                   autofocus: true,
@@ -735,6 +847,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
             const SizedBox(height: 32),
             TextField(
               controller: _urlController,
+              enabled: !_useSyncConfig,
               decoration: InputDecoration(
                 labelText: "WebDAV URL".tl,
                 hintText: "https://your-nas.com/dav",
@@ -745,6 +858,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
             const SizedBox(height: 12),
             TextField(
               controller: _usernameController,
+              enabled: !_useSyncConfig,
               decoration: InputDecoration(
                 labelText: "Username".tl,
                 border: const OutlineInputBorder(),
@@ -754,6 +868,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
             const SizedBox(height: 12),
             TextField(
               controller: _passwordController,
+              enabled: !_useSyncConfig,
               obscureText: true,
               decoration: InputDecoration(
                 labelText: "Password".tl,
@@ -764,6 +879,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
             const SizedBox(height: 12),
             TextField(
               controller: _basePathController,
+              enabled: !_useSyncConfig,
               decoration: InputDecoration(
                 labelText: "Base Path".tl,
                 hintText: "/comics",
@@ -772,6 +888,29 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
               ),
             ),
             const SizedBox(height: 24),
+            SwitchListTile(
+              value: _useSyncConfig,
+              onChanged: _hasSyncWebDavConfig ? _setUseSyncConfig : null,
+              contentPadding: EdgeInsets.zero,
+              title: Text("Use Sync WebDAV".tl),
+              subtitle: Text(
+                _hasSyncWebDavConfig
+                    ? "Reuse the WebDAV config from app data sync.".tl
+                    : "Configure sync WebDAV in app settings first.".tl,
+              ),
+            ),
+            if (_hasSyncWebDavConfig && !_useSyncConfig)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: _applySyncWebDavConfig,
+                    icon: const Icon(Icons.sync_alt),
+                    label: Text("Fill From Sync WebDAV".tl),
+                  ),
+                ),
+              ),
             Row(
               children: [
                 Expanded(
@@ -954,16 +1093,6 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
         );
       }
 
-      if (mobiBook == null) {
-        if (mounted) {
-          showToast(
-            message: "Failed to parse MOBI file".tl,
-            context: context,
-          );
-        }
-        return;
-      }
-
       var comic = LocalComic(
         id: mobiBook.id,
         title: mobiBook.title,
@@ -1019,15 +1148,6 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
             remoteSize: file.size,
             remoteModifiedTime: file.modifiedTime,
           );
-      if (archiveBook == null) {
-        if (mounted) {
-          showToast(
-            message: "Failed to parse archive file".tl,
-            context: context,
-          );
-        }
-        return;
-      }
       var comic = LocalComic(
         id: archiveBook.id,
         title: archiveBook.title,
@@ -1052,21 +1172,19 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   Future<void> _openEpubFile(String path, WebDavFile file) async {
     try {
       showToast(message: "Loading...".tl, context: context);
-      final epubBook = await WebDavEpubService().prepareStreamingMeta(
-        remotePath: path,
-        fileName: file.name,
-        remoteSize: file.size,
-        remoteModifiedTime: file.modifiedTime,
-      );
-      if (epubBook == null) {
-        if (mounted) {
-          showToast(
-            message: "Failed to parse EPUB file".tl,
-            context: context,
+      final epubBook =
+          await WebDavEpubService().prepareStreamingMeta(
+            remotePath: path,
+            fileName: file.name,
+            remoteSize: file.size,
+            remoteModifiedTime: file.modifiedTime,
+          ) ??
+          await WebDavEpubService().prepareFromWebDav(
+            remotePath: path,
+            fileName: file.name,
+            remoteSize: file.size,
+            remoteModifiedTime: file.modifiedTime,
           );
-        }
-        return;
-      }
       var comic = LocalComic(
         id: epubBook.id,
         title: epubBook.title,
@@ -1128,6 +1246,58 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
 
     return SliverMainAxisGroup(
       slivers: [
+        if (_searchKeyword.isEmpty)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final filter in _BrowseFilter.values)
+                    ChoiceChip(
+                      label: Text(filter.label.tl),
+                      selected: _browseFilter == filter,
+                      onSelected: (_) {
+                        setState(() {
+                          _browseFilter = filter;
+                        });
+                      },
+                    ),
+                  PopupMenuButton<_BrowseSort>(
+                    tooltip: "Sort".tl,
+                    onSelected: (value) {
+                      setState(() {
+                        _browseSort = value;
+                      });
+                    },
+                    itemBuilder: (context) => _BrowseSort.values
+                        .map(
+                          (sort) => PopupMenuItem<_BrowseSort>(
+                            value: sort,
+                            child: Row(
+                              children: [
+                                SizedBox(
+                                  width: 24,
+                                  child: _browseSort == sort
+                                      ? const Icon(Icons.check, size: 16)
+                                      : null,
+                                ),
+                                Text(sort.label.tl),
+                              ],
+                            ),
+                          ),
+                        )
+                        .toList(),
+                    child: Chip(
+                      avatar: const Icon(Icons.sort, size: 16),
+                      label: Text(_browseSort.label.tl),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         if (hasImages && _searchKeyword.isEmpty)
           SliverToBoxAdapter(
             child: Padding(
@@ -1519,10 +1689,7 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   }
 
   File _getMobiPreviewFile(String remotePath) {
-    var key = md5.convert(utf8.encode(remotePath)).toString();
-    return File(
-      FilePath.join(App.cachePath, 'webdav_mobi_preview', '$key.bin'),
-    );
+    return WebDavCachePaths.mobiPreviewFile(remotePath);
   }
 
   Future<String?> _resolveArchiveFileCover(String remotePath, WebDavFile file) {
@@ -1737,12 +1904,33 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
     WebDavFile file,
   ) async {
     try {
-      return await WebDavEpubService().fetchCoverOnly(
+      final streamCover = await WebDavEpubService().fetchCoverOnly(
         remotePath: remotePath,
         fileName: file.name,
         remoteSize: file.size,
         remoteModifiedTime: file.modifiedTime,
       );
+      if (streamCover != null) {
+        return streamCover;
+      }
+
+      final epubBook = await WebDavEpubService().prepareFromWebDav(
+        remotePath: remotePath,
+        fileName: file.name,
+        remoteSize: file.size,
+        remoteModifiedTime: file.modifiedTime,
+      );
+      final cacheDir = WebDavEpubService.decodeStreamDirectory(
+        epubBook.directory,
+      );
+      if (cacheDir == null || cacheDir.isEmpty) {
+        return _findCachedEpubCover(remotePath);
+      }
+      final coverFile = File(FilePath.join(cacheDir, epubBook.cover));
+      if (await coverFile.exists()) {
+        return coverFile.path;
+      }
+      return _findCachedEpubCover(remotePath);
     } catch (e, s) {
       Log.warning(
         'WebDavComicsPage',
@@ -2090,10 +2278,18 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
 
   Widget _buildRecentItem(History history) {
     var localComic = LocalManager().find(history.id, ComicType.webdav);
+    final isPdfHistory = _isPdfHistory(history);
     return GestureDetector(
       onTap: () {
         if (localComic != null) {
           localComic.read();
+        } else if (_isPdfHistory(history)) {
+          context.to(
+            () => WebDavPdfReaderPage.webdav(
+              remotePath: history.cover,
+              title: history.title,
+            ),
+          );
         }
       },
       child: Container(
@@ -2105,17 +2301,20 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(8),
                 child: Container(
-                  color: Theme.of(context)
-                      .colorScheme
-                      .surfaceContainerHighest,
-                  child: Image(
-                    image: HistoryImageProvider(history),
-                    fit: BoxFit.cover,
-                    width: double.infinity,
-                    height: double.infinity,
-                    errorBuilder: (_, __, ___) =>
-                        const Center(child: Icon(Icons.menu_book, size: 32)),
-                  ),
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  child: isPdfHistory
+                      ? const Center(
+                          child: Icon(Icons.picture_as_pdf, size: 32),
+                        )
+                      : Image(
+                          image: HistoryImageProvider(history),
+                          fit: BoxFit.cover,
+                          width: double.infinity,
+                          height: double.infinity,
+                          errorBuilder: (_, __, ___) => const Center(
+                            child: Icon(Icons.menu_book, size: 32),
+                          ),
+                        ),
                 ),
               ),
             ),
@@ -2131,13 +2330,18 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
           ],
         ),
       ),
     );
+  }
+
+  bool _isPdfHistory(History history) {
+    return history.id.startsWith('webdav_pdf_') &&
+        history.cover.startsWith('/');
   }
 
   Widget _buildBookshelf() {
@@ -2189,63 +2393,89 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
   }
 
   void _showConfigDialog() {
-    var config = _manager.config;
-    _urlController.text = config?['url'] ?? '';
-    _usernameController.text = config?['username'] ?? '';
-    _passwordController.text = config?['password'] ?? '';
-    _basePathController.text = config?['basePath'] ?? '/';
+    _fillConfigInputs(_manager.config);
 
     showDialog(
       context: context,
       builder: (dialogContext) {
-        return ContentDialog(
-          title: "WebDAV Settings".tl,
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: _urlController,
-                decoration: InputDecoration(
-                  labelText: "WebDAV URL".tl,
-                  border: const OutlineInputBorder(),
-                ),
+        return StatefulBuilder(
+          builder: (context, dialogSetState) {
+            return ContentDialog(
+              title: "WebDAV Settings".tl,
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: _urlController,
+                    enabled: !_useSyncConfig,
+                    decoration: InputDecoration(
+                      labelText: "WebDAV URL".tl,
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _usernameController,
+                    enabled: !_useSyncConfig,
+                    decoration: InputDecoration(
+                      labelText: "Username".tl,
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _passwordController,
+                    enabled: !_useSyncConfig,
+                    obscureText: true,
+                    decoration: InputDecoration(
+                      labelText: "Password".tl,
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _basePathController,
+                    enabled: !_useSyncConfig,
+                    decoration: InputDecoration(
+                      labelText: "Base Path".tl,
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  SwitchListTile(
+                    value: _useSyncConfig,
+                    onChanged: _hasSyncWebDavConfig
+                        ? (value) {
+                            _setUseSyncConfig(value);
+                            dialogSetState(() {});
+                          }
+                        : null,
+                    contentPadding: EdgeInsets.zero,
+                    title: Text("Use Sync WebDAV".tl),
+                  ),
+                ],
               ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _usernameController,
-                decoration: InputDecoration(
-                  labelText: "Username".tl,
-                  border: const OutlineInputBorder(),
+              actions: [
+                if (_hasSyncWebDavConfig && !_useSyncConfig)
+                  TextButton(
+                    onPressed: () {
+                      _applySyncWebDavConfig();
+                      dialogSetState(() {});
+                    },
+                    child: Text("Fill From Sync WebDAV".tl),
+                  ),
+                FilledButton(
+                  onPressed: () async {
+                    await _saveConfig();
+                    if (dialogContext.mounted) {
+                      dialogContext.pop();
+                    }
+                  },
+                  child: Text("Save".tl),
                 ),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _passwordController,
-                obscureText: true,
-                decoration: InputDecoration(
-                  labelText: "Password".tl,
-                  border: const OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _basePathController,
-                decoration: InputDecoration(
-                  labelText: "Base Path".tl,
-                  border: const OutlineInputBorder(),
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            FilledButton(
-              onPressed: () {
-                _saveConfig();
-                dialogContext.pop();
-              },
-              child: Text("Save".tl),
-            ),
-          ],
+              ],
+            );
+          },
         );
       },
     );
@@ -2283,6 +2513,26 @@ class _WebDavComicsPageState extends State<WebDavComicsPage> {
 }
 
 enum _ViewMode { browse, scanned, bookshelf }
+
+enum _BrowseFilter {
+  all('All'),
+  directories('Directories'),
+  comics('Comics'),
+  files('Files');
+
+  final String label;
+
+  const _BrowseFilter(this.label);
+}
+
+enum _BrowseSort {
+  nameAsc('Sort: Name'),
+  modifiedDesc('Sort: Modified');
+
+  final String label;
+
+  const _BrowseSort(this.label);
+}
 
 class _CoverSearchNode {
   final String path;

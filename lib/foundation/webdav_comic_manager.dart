@@ -4,15 +4,19 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:crypto/crypto.dart';
-import 'package:venera/foundation/app.dart';
-import 'package:venera/foundation/appdata.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/local.dart';
 import 'package:venera/foundation/log.dart';
-import 'package:venera/network/app_dio.dart';
+import 'package:venera/foundation/webdav_archive_service.dart';
+import 'package:venera/foundation/webdav_cache.dart';
+import 'package:venera/foundation/webdav_config.dart';
+import 'package:venera/foundation/webdav_epub_service.dart';
+import 'package:venera/foundation/webdav_mobi_service.dart';
+import 'package:venera/foundation/webdav_pdf_service.dart';
 import 'package:webdav_client/webdav_client.dart' as webdav;
 import 'package:venera/utils/io.dart';
 
@@ -55,6 +59,13 @@ class WebDavRangeReadResult {
   });
 }
 
+class _WebDavChapterDirectory {
+  final String name;
+  final String cover;
+
+  const _WebDavChapterDirectory({required this.name, required this.cover});
+}
+
 /// WebDAV 漫画管理器（单例）
 ///
 /// 负责管理 WebDAV 连接、配置和漫画扫描
@@ -70,48 +81,28 @@ class WebDavComicManager with ChangeNotifier {
   DateTime? _lastUsed;
 
   /// 获取 WebDAV 配置
-  ///
-  /// 返回格式: {'url': ..., 'username': ..., 'password': ..., 'basePath': ...}
-  /// 如果未配置则返回 null
-  Map<String, String>? get config {
-    var cfg = appdata.settings['webdavComics'];
-    if (cfg is! Map) return null;
+  WebDavConnectionConfig? get config => WebDavSettings.readComicsConfig();
 
-    if (!cfg.containsKey('url') ||
-        !cfg.containsKey('username') ||
-        !cfg.containsKey('password') ||
-        !cfg.containsKey('basePath')) {
-      return null;
-    }
+  WebDavConnectionConfig? get ownConfig => WebDavSettings.readComicsOwnConfig();
 
-    return {
-      'url': cfg['url'].toString(),
-      'username': cfg['username'].toString(),
-      'password': cfg['password'].toString(),
-      'basePath': cfg['basePath'].toString(),
-    };
-  }
+  bool get useSyncConfig => WebDavSettings.comicsUsesSyncConfig();
 
   /// 是否已配置 WebDAV
-  bool get isConfigured {
-    var cfg = config;
-    return cfg != null && cfg['url']!.isNotEmpty;
-  }
+  bool get isConfigured => config?.isConfigured ?? false;
 
   /// 保存配置
-  Future<void> saveConfig(
-    String url,
-    String username,
-    String password,
-    String basePath,
-  ) async {
-    appdata.settings['webdavComics'] = {
-      'url': url,
-      'username': username,
-      'password': password,
-      'basePath': basePath,
-    };
-    await appdata.saveData();
+  Future<void> saveConfig({
+    required WebDavConnectionConfig? config,
+    required bool useSyncConfig,
+  }) async {
+    if (useSyncConfig &&
+        !(WebDavSettings.readSyncConfig()?.isConfigured ?? false)) {
+      throw Exception('Sync WebDAV is not configured');
+    }
+    await WebDavSettings.saveComicsConfig(
+      config: config,
+      useSyncConfig: useSyncConfig,
+    );
 
     // 清除旧客户端
     _client = null;
@@ -120,10 +111,19 @@ class WebDavComicManager with ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> testConnection(WebDavConnectionConfig config) async {
+    final normalizedConfig = config.normalized();
+    await _withRetry(() async {
+      final client = WebDavClientFactory.create(normalizedConfig);
+      final fullPath = WebDavPathUtils.scope(normalizedConfig, '/');
+      Log.info('WebDavComicManager', 'Testing connection: $fullPath');
+      await client.readDir(fullPath);
+    });
+  }
+
   /// 清除配置
   Future<void> clearConfig() async {
-    appdata.settings['webdavComics'] = null;
-    await appdata.saveData();
+    await WebDavSettings.saveComicsConfig(config: null, useSyncConfig: false);
 
     _client = null;
     _lastUsed = null;
@@ -133,8 +133,8 @@ class WebDavComicManager with ChangeNotifier {
 
   /// 获取或创建 WebDAV 客户端
   webdav.Client _getClient() {
-    var cfg = config;
-    if (cfg == null) {
+    final cfg = config;
+    if (cfg == null || !cfg.isConfigured) {
       throw Exception('WebDAV not configured');
     }
 
@@ -150,12 +150,7 @@ class WebDavComicManager with ChangeNotifier {
     }
 
     // 创建新客户端
-    _client = webdav.newClient(
-      cfg['url']!,
-      user: cfg['username']!,
-      password: cfg['password']!,
-      adapter: RHttpAdapter(),
-    );
+    _client = WebDavClientFactory.create(cfg);
     _lastUsed = DateTime.now();
 
     return _client!;
@@ -206,9 +201,8 @@ class WebDavComicManager with ChangeNotifier {
   /// [path] 相对于 basePath 的路径（如 "/" 或 "/OnePiece"）
   Future<List<WebDavFile>> listDirectory(String path) async {
     return _withRetry(() async {
-      var client = _getClient();
-      var cfg = config!;
-      var fullPath = _normalizePath('${cfg['basePath']}$path');
+      final client = _getClient();
+      final fullPath = _scopePath(path);
 
       Log.info('WebDavComicManager', 'Listing directory: $fullPath');
 
@@ -222,9 +216,8 @@ class WebDavComicManager with ChangeNotifier {
   /// [path] 相对于 basePath 的路径
   Future<Uint8List> readFile(String path) async {
     return _withRetry(() async {
-      var client = _getClient();
-      var cfg = config!;
-      var fullPath = _normalizePath('${cfg['basePath']}$path');
+      final client = _getClient();
+      final fullPath = _scopePath(path);
 
       Log.info('WebDavComicManager', 'Reading file: $fullPath');
 
@@ -251,10 +244,9 @@ class WebDavComicManager with ChangeNotifier {
     }
 
     return _withRetry(() async {
-      var client = _getClient();
-      var cfg = config!;
-      var fullPath = _normalizePath('${cfg['basePath']}$path');
-      var rangeHeader = end == null ? 'bytes=$start-' : 'bytes=$start-$end';
+      final client = _getClient();
+      final fullPath = _scopePath(path);
+      final rangeHeader = end == null ? 'bytes=$start-' : 'bytes=$start-$end';
 
       Log.info('WebDavComicManager', 'Reading range: $fullPath [$rangeHeader]');
 
@@ -303,9 +295,8 @@ class WebDavComicManager with ChangeNotifier {
 
   Future<int> getFileSize(String path) async {
     return _withRetry(() async {
-      var client = _getClient();
-      var cfg = config!;
-      var fullPath = _normalizePath('${cfg['basePath']}$path');
+      final client = _getClient();
+      final fullPath = _scopePath(path);
 
       var file = await client.readProps(fullPath);
       var size = file.size;
@@ -342,10 +333,9 @@ class WebDavComicManager with ChangeNotifier {
   /// [path] 相对于 basePath 的路径
   Future<void> readFileToLocal(String path, String savePath) async {
     return _withRetry(() async {
-      var client = _getClient();
-      var cfg = config!;
-      var fullPath = _normalizePath('${cfg['basePath']}$path');
-      var outFile = File(savePath);
+      final client = _getClient();
+      final fullPath = _scopePath(path);
+      final outFile = File(savePath);
       await outFile.parent.create(recursive: true);
 
       Log.info('WebDavComicManager', 'Reading file to local: $fullPath');
@@ -359,11 +349,19 @@ class WebDavComicManager with ChangeNotifier {
   /// [data] 要写入的字节数据
   Future<void> writeFile(String path, Uint8List data) async {
     return _withRetry(() async {
-      var client = _getClient();
-      var cfg = config!;
-      var fullPath = _normalizePath('${cfg['basePath']}$path');
+      final client = _getClient();
+      final fullPath = _scopePath(path);
       Log.info('WebDavComicManager', 'Writing file: $fullPath');
       await client.write(fullPath, data);
+    });
+  }
+
+  Future<void> createDirectoryAll(String path) async {
+    return _withRetry(() async {
+      final client = _getClient();
+      final fullPath = _scopePath(path);
+      Log.info('WebDavComicManager', 'Ensuring directory exists: $fullPath');
+      await client.mkdirAll(fullPath);
     });
   }
 
@@ -372,28 +370,53 @@ class WebDavComicManager with ChangeNotifier {
   /// [path] 相对于 basePath 的路径，默认为根目录 "/"
   /// [maxDepth] 最大递归深度，防止过深扫描
   Future<List<LocalComic>> scanComics(String path, {int maxDepth = 5}) async {
-    return _scanComicsRecursive(path, 0, maxDepth);
+    final files = await listDirectory(path);
+    if (path != '/') {
+      final currentComic = await parseComicDirectory(path, knownFiles: files);
+      if (currentComic != null) {
+        return [currentComic];
+      }
+    }
+    return _scanComicsRecursive(path, 0, maxDepth, knownFiles: files);
   }
 
   Future<List<LocalComic>> _scanComicsRecursive(
     String path,
     int currentDepth,
-    int maxDepth,
-  ) async {
+    int maxDepth, {
+    List<WebDavFile>? knownFiles,
+  }) async {
     if (currentDepth >= maxDepth) {
       Log.info('WebDavComicManager', 'Max scan depth reached at $path');
       return [];
     }
 
-    var files = await listDirectory(path);
+    var files = (knownFiles ?? await listDirectory(path))
+        .where(
+          (f) => !WebDavCachePaths.isInternalMetadataEntry(
+            name: f.name,
+            isDirectory: f.isDirectory,
+          ),
+        )
+        .toList();
     var comics = <LocalComic>[];
 
-    var directories = files.where((f) => f.isDirectory).toList();
+    var directories = files.where((f) => f.isDirectory).toList()
+      ..sort(_compareFilenames);
+    var singleFileComics =
+        files
+            .where((f) => !f.isDirectory && _isSingleFileComicResource(f.name))
+            .toList()
+          ..sort(_compareFilenames);
 
     for (var dir in directories) {
       try {
-        var comicPath = path == '/' ? '/${dir.name}' : '$path/${dir.name}';
-        var comic = await parseComicDirectory(comicPath);
+        var comicPath = _joinPath(path, dir.name);
+        var childFiles = await listDirectory(comicPath);
+        var comic = await parseComicDirectory(
+          comicPath,
+          knownFiles: childFiles,
+        );
         if (comic != null) {
           comics.add(comic);
         } else {
@@ -402,6 +425,7 @@ class WebDavComicManager with ChangeNotifier {
             comicPath,
             currentDepth + 1,
             maxDepth,
+            knownFiles: childFiles,
           );
           comics.addAll(subComics);
         }
@@ -414,14 +438,39 @@ class WebDavComicManager with ChangeNotifier {
       }
     }
 
+    for (var file in singleFileComics) {
+      try {
+        var comic = await _parseComicFile(path, file);
+        if (comic != null) {
+          comics.add(comic);
+        }
+      } catch (e, s) {
+        Log.error(
+          'WebDavComicManager',
+          'Failed to parse comic file ${file.name}: $e',
+          s,
+        );
+      }
+    }
+
     return comics;
   }
 
   /// 解析单个漫画目录
   ///
   /// [path] 相对于 basePath 的路径
-  Future<LocalComic?> parseComicDirectory(String path) async {
-    var files = await listDirectory(path);
+  Future<LocalComic?> parseComicDirectory(
+    String path, {
+    List<WebDavFile>? knownFiles,
+  }) async {
+    var files = (knownFiles ?? await listDirectory(path))
+        .where(
+          (f) => !WebDavCachePaths.isInternalMetadataEntry(
+            name: f.name,
+            isDirectory: f.isDirectory,
+          ),
+        )
+        .toList();
 
     // 分离目录和图片文件
     var subdirs = files.where((f) => f.isDirectory).toList();
@@ -429,38 +478,22 @@ class WebDavComicManager with ChangeNotifier {
         .where((f) => !f.isDirectory && _isImageFile(f.name))
         .toList();
 
-    // 判断是否有章节
-    bool hasChapters = subdirs.isNotEmpty && imageFiles.isEmpty;
+    final chapterDirs = await _findChapterDirectories(path, subdirs);
+    final hasChapters = chapterDirs.isNotEmpty;
 
     String coverPath;
     List<String> chapters = [];
+    var tags = <String>[];
 
     if (hasChapters) {
-      // 多章节漫画
-      chapters = subdirs.map((d) => d.name).toList();
-      chapters.sort(_compareFilenames);
-
-      // 尝试在第一个章节中找封面
-      var firstChapterFiles = await listDirectory('$path/${chapters.first}');
-      var firstChapterImages = firstChapterFiles
-          .where((f) => !f.isDirectory && _isImageFile(f.name))
-          .toList();
-
-      if (firstChapterImages.isEmpty) {
-        Log.warning(
-          'WebDavComicManager',
-          'No images found in first chapter of $path',
-        );
-        return null;
+      chapters = chapterDirs.map((d) => d.name).toList();
+      if (imageFiles.isNotEmpty) {
+        imageFiles.sort(_compareFilenames);
+        coverPath = _pickCoverName(imageFiles);
+        tags.add(WebDavCachePaths.rootCoverTag);
+      } else {
+        coverPath = chapterDirs.first.cover;
       }
-
-      firstChapterImages.sort(_compareFilenames);
-      coverPath = firstChapterImages
-          .firstWhere(
-            (f) => f.name.toLowerCase().startsWith('cover'),
-            orElse: () => firstChapterImages.first,
-          )
-          .name;
     } else {
       // 单章节漫画
       if (imageFiles.isEmpty) {
@@ -487,7 +520,7 @@ class WebDavComicManager with ChangeNotifier {
       id: id,
       title: name,
       subtitle: '',
-      tags: [],
+      tags: tags,
       directory: path, // 存储相对路径
       chapters: hasChapters
           ? ComicChapters(Map.fromIterables(chapters, chapters))
@@ -499,18 +532,164 @@ class WebDavComicManager with ChangeNotifier {
     );
   }
 
+  Future<List<_WebDavChapterDirectory>> _findChapterDirectories(
+    String path,
+    List<WebDavFile> subdirs,
+  ) async {
+    var sortedSubdirs = [...subdirs]..sort(_compareFilenames);
+    var chapters = <_WebDavChapterDirectory>[];
+
+    for (var dir in sortedSubdirs) {
+      var chapterPath = _joinPath(path, dir.name);
+      var chapterFiles = await listDirectory(chapterPath);
+      var chapterImages = chapterFiles
+          .where((f) => !f.isDirectory && _isImageFile(f.name))
+          .toList();
+      if (chapterImages.isEmpty) {
+        continue;
+      }
+      chapterImages.sort(_compareFilenames);
+      chapters.add(
+        _WebDavChapterDirectory(
+          name: dir.name,
+          cover: _pickCoverName(chapterImages),
+        ),
+      );
+    }
+
+    return chapters;
+  }
+
+  String _pickCoverName(List<WebDavFile> imageFiles) {
+    return imageFiles
+        .firstWhere(
+          (f) => f.name.toLowerCase().startsWith('cover'),
+          orElse: () => imageFiles.first,
+        )
+        .name;
+  }
+
+  Future<LocalComic?> _parseComicFile(String directory, WebDavFile file) async {
+    final remotePath = _joinPath(directory, file.name);
+
+    if (_isMobiFile(file.name)) {
+      final book =
+          await WebDavMobiService().prepareStreamingMeta(
+            remotePath: remotePath,
+            fileName: file.name,
+            remoteSize: file.size,
+            remoteModifiedTime: file.modifiedTime,
+          ) ??
+          await WebDavMobiService().prepareFromWebDav(
+            remotePath: remotePath,
+            fileName: file.name,
+            remoteSize: file.size,
+            remoteModifiedTime: file.modifiedTime,
+          );
+      return _buildSingleFileComic(
+        id: book.id,
+        title: book.title,
+        subtitle: book.subtitle,
+        tags: book.tags,
+        directory: book.directory,
+        cover: book.cover,
+        createdAt: book.createdAt,
+      );
+    }
+
+    if (_isArchiveFile(file.name)) {
+      final book =
+          await WebDavArchiveService().prepareStreamingMeta(
+            remotePath: remotePath,
+            fileName: file.name,
+            remoteSize: file.size,
+            remoteModifiedTime: file.modifiedTime,
+          ) ??
+          await WebDavArchiveService().prepareFromWebDav(
+            remotePath: remotePath,
+            fileName: file.name,
+            remoteSize: file.size,
+            remoteModifiedTime: file.modifiedTime,
+          );
+      return _buildSingleFileComic(
+        id: book.id,
+        title: book.title,
+        subtitle: book.subtitle,
+        tags: book.tags,
+        directory: book.directory,
+        cover: book.cover,
+        createdAt: book.createdAt,
+      );
+    }
+
+    if (_isEpubFile(file.name)) {
+      final book =
+          await WebDavEpubService().prepareStreamingMeta(
+            remotePath: remotePath,
+            fileName: file.name,
+            remoteSize: file.size,
+            remoteModifiedTime: file.modifiedTime,
+          ) ??
+          await WebDavEpubService().prepareFromWebDav(
+            remotePath: remotePath,
+            fileName: file.name,
+            remoteSize: file.size,
+            remoteModifiedTime: file.modifiedTime,
+          );
+      return _buildSingleFileComic(
+        id: book.id,
+        title: book.title,
+        subtitle: book.subtitle,
+        tags: book.tags,
+        directory: book.directory,
+        cover: book.cover,
+        createdAt: book.createdAt,
+      );
+    }
+
+    if (_isPdfFile(file.name)) {
+      return _buildSingleFileComic(
+        id: WebDavPdfService.buildBookId(remotePath),
+        title: _stripFileExtension(file.name),
+        subtitle: '',
+        tags: const <String>['webdav:pdf'],
+        directory: WebDavPdfService.encodeDirectory(remotePath),
+        cover: '',
+        createdAt: DateTime.now(),
+      );
+    }
+
+    return null;
+  }
+
+  LocalComic _buildSingleFileComic({
+    required String id,
+    required String title,
+    required String subtitle,
+    required List<String> tags,
+    required String directory,
+    required String cover,
+    required DateTime createdAt,
+  }) {
+    return LocalComic(
+      id: id,
+      title: title,
+      subtitle: subtitle,
+      tags: tags,
+      directory: directory,
+      chapters: null,
+      cover: cover,
+      comicType: ComicType.webdav,
+      downloadedChapters: const <String>[],
+      createdAt: createdAt,
+    );
+  }
+
   /// 获取缓存大小（字节）
   Future<int> getCacheSize() async {
     var totalSize = 0;
-    for (var dirName in const [
-      'webdav_comics',
-      'webdav_mobi',
-      'webdav_mobi_stream',
-      'webdav_pdf',
-      'webdav_archive',
-      'webdav_archive_stream',
-    ]) {
-      var cacheDir = Directory('${App.cachePath}/$dirName');
+    for (var dirName in WebDavCachePaths.allCacheDirectoryNames) {
+      var cacheDir = WebDavCachePaths.cacheDirectory(dirName);
       if (!await cacheDir.exists()) continue;
       await for (var entity in cacheDir.list(recursive: true)) {
         if (entity is File) {
@@ -523,15 +702,8 @@ class WebDavComicManager with ChangeNotifier {
 
   /// 清除缓存
   Future<void> clearCache() async {
-    for (var dirName in const [
-      'webdav_comics',
-      'webdav_mobi',
-      'webdav_mobi_stream',
-      'webdav_pdf',
-      'webdav_archive',
-      'webdav_archive_stream',
-    ]) {
-      var cacheDir = Directory('${App.cachePath}/$dirName');
+    for (var dirName in WebDavCachePaths.allCacheDirectoryNames) {
+      var cacheDir = WebDavCachePaths.cacheDirectory(dirName);
       if (await cacheDir.exists()) {
         await cacheDir.delete(recursive: true);
       }
@@ -540,17 +712,16 @@ class WebDavComicManager with ChangeNotifier {
     notifyListeners();
   }
 
-  /// 规范化路径
-  String _normalizePath(String path) {
-    // 确保路径以 / 开头
-    if (!path.startsWith('/')) {
-      path = '/$path';
+  String _scopePath(String path) {
+    final currentConfig = config;
+    if (currentConfig == null || !currentConfig.isConfigured) {
+      throw Exception('WebDAV not configured');
     }
-    // 移除重复的 /
-    while (path.contains('//')) {
-      path = path.replaceAll('//', '/');
-    }
-    return path;
+    return WebDavPathUtils.scope(currentConfig, path);
+  }
+
+  String _joinPath(String base, String name) {
+    return WebDavPathUtils.normalize(base == '/' ? '/$name' : '$base/$name');
   }
 
   /// 判断是否为图片文件
@@ -566,6 +737,39 @@ class WebDavComicManager with ChangeNotifier {
     ];
     var ext = filename.split('.').last.toLowerCase();
     return imageExtensions.contains(ext);
+  }
+
+  bool _isSingleFileComicResource(String filename) {
+    return _isMobiFile(filename) ||
+        _isArchiveFile(filename) ||
+        _isEpubFile(filename) ||
+        _isPdfFile(filename);
+  }
+
+  bool _isMobiFile(String filename) {
+    const mobiExtensions = ['mobi', 'azw', 'azw3', 'azw4'];
+    return mobiExtensions.contains(filename.split('.').last.toLowerCase());
+  }
+
+  bool _isArchiveFile(String filename) {
+    const archiveExtensions = ['zip', 'cbz', '7z', 'cb7', 'rar', 'cbr'];
+    return archiveExtensions.contains(filename.split('.').last.toLowerCase());
+  }
+
+  bool _isEpubFile(String filename) {
+    return filename.split('.').last.toLowerCase() == 'epub';
+  }
+
+  bool _isPdfFile(String filename) {
+    return filename.split('.').last.toLowerCase() == 'pdf';
+  }
+
+  String _stripFileExtension(String filename) {
+    final index = filename.lastIndexOf('.');
+    if (index > 0) {
+      return filename.substring(0, index).trim();
+    }
+    return filename.trim();
   }
 
   /// 智能文件名比较（优先按数字排序）

@@ -47,6 +47,11 @@ app.*.map.json
 **/.gradle/
 **/.cxx/
 
+# waifu2x local build outputs
+/third_party/waifu2x/build-macos/
+/third_party/waifu2x/macos-build/build-arm64/
+/third_party/waifu2x/macos-build/build-x86_64/
+
 add_translation.py
 
 */*/generated_*
